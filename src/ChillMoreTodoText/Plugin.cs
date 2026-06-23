@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -26,6 +27,9 @@ namespace ChillMoreTodoText
         internal static bool EnableWordWrap;
         internal static bool GrowCells;
         internal static float CellPadding;
+        internal static bool DisableInputScroll;
+        internal static float UIWidthScale;
+        internal static float UIHeightScale;
 
         private void Awake()
         {
@@ -76,12 +80,39 @@ namespace ChillMoreTodoText
                 "Extra vertical padding (pixels) added on top of the text height when a row grows. Bump this up " +
                 "if grown rows feel too tight, or down if they feel too roomy.");
 
+            ConfigEntry<bool> noScrollCfg = Config.Bind(
+                "Display",
+                "DisableInputScroll",
+                true,
+                "Since rows now grow to show the whole entry, stop each to-do text box from scrolling its own " +
+                "contents / hijacking the mouse wheel. This lets the to-do list itself scroll normally instead " +
+                "of getting stuck scrolling inside a single box.");
+
+            ConfigEntry<float> uiWidthScaleCfg = Config.Bind(
+                "Layout",
+                "UIWidthScale",
+                1.0f,
+                "Scale the width of the to-do list panel. 1.0 = vanilla width (the default). Values above 1.0 " +
+                "make the panel wider so text wraps less and more content fits per row; e.g. 1.25 = 25% wider. " +
+                "The text itself is not stretched — only the panel's width changes.");
+
+            ConfigEntry<float> uiHeightScaleCfg = Config.Bind(
+                "Layout",
+                "UIHeightScale",
+                1.0f,
+                "Scale the height of the to-do list panel. 1.0 = vanilla height (the default). Values above 1.0 " +
+                "make the panel taller so more rows are visible without scrolling; e.g. 1.25 = 25% taller. " +
+                "The text itself is not stretched — only the panel's height changes.");
+
             MaxLines = maxLinesCfg.Value;
             MaxCharacters = maxCharsCfg.Value;
             DisableEllipsis = ellipsisCfg.Value;
             EnableWordWrap = wrapCfg.Value;
             GrowCells = growCfg.Value;
             CellPadding = padCfg.Value;
+            DisableInputScroll = noScrollCfg.Value;
+            UIWidthScale = uiWidthScaleCfg.Value;
+            UIHeightScale = uiHeightScaleCfg.Value;
 
             if (MaxLines < 0)
             {
@@ -95,6 +126,16 @@ namespace ChillMoreTodoText
             }
             if (CellPadding < 0f)
                 CellPadding = 0f;
+            if (UIWidthScale <= 0f)
+            {
+                Log.LogWarning($"UIWidthScale {UIWidthScale} is not positive; resetting to 1.0 (vanilla width).");
+                UIWidthScale = 1.0f;
+            }
+            if (UIHeightScale <= 0f)
+            {
+                Log.LogWarning($"UIHeightScale {UIHeightScale} is not positive; resetting to 1.0 (vanilla height).");
+                UIHeightScale = 1.0f;
+            }
 
             var harmony = new Harmony(Guid);
 
@@ -113,47 +154,49 @@ namespace ChillMoreTodoText
                     typeof(SetupMultiLineSubmit_Patch), nameof(SetupMultiLineSubmit_Patch.Postfix)));
             }
 
-            // (2) Row growth. Attach a small auto-sizer to each to-do cell as it's built, so the row resizes
-            // to its text. We hook the cell Setup methods (desktop TodoUI + mobile TodoTaskListItemView) —
-            // their `this` IS the cell root, which is what needs to grow.
+            // (2) Row growth. Attach a TodoCellAutoSizer to each to-do cell as it's built.
             if (GrowCells)
             {
                 int hooked = 0;
-                hooked += PatchCellSetup(harmony, "TodoUI");
-                hooked += PatchCellSetup(harmony, "TodoTaskListItemView");
+                hooked += PatchSetupMethod(harmony, "TodoUI", typeof(CellSetup_Patch));
+                hooked += PatchSetupMethod(harmony, "TodoTaskListItemView", typeof(CellSetup_Patch));
                 if (hooked == 0)
                     Log.LogWarning("Could not hook any to-do cell Setup method — rows won't auto-grow. " +
                                    "(Text limits are unaffected.)");
+            }
+
+            // (3) Panel resizing. Widen/lengthen the to-do list panel via sizeDelta (not scale, so text
+            // stays crisp). A TodoListUIScaler re-applies the size each frame in case the game resets it.
+            if (!Mathf.Approximately(UIWidthScale, 1f) || !Mathf.Approximately(UIHeightScale, 1f))
+            {
+                int panelsHooked = 0;
+                panelsHooked += PatchSetupMethod(harmony, "TodoListUI", typeof(PanelSetup_Patch));
+                panelsHooked += PatchSetupMethod(harmony, "Bulbul.Mobile.TodoListUIViewMobile", typeof(PanelSetup_Patch));
+                if (panelsHooked == 0)
+                    Log.LogWarning("Could not hook any to-do list panel Setup method — UIWidthScale/UIHeightScale " +
+                                   "won't apply. (Other features are unaffected.)");
             }
 
             Log.LogInfo($"Chill More Todo Text loaded — to-do text boxes raised to {MaxLines} line(s)" +
                         (MaxCharacters == 0 ? ", unlimited characters" : $", {MaxCharacters} characters") +
                         (DisableEllipsis ? ", ellipsis removed" : "") +
                         (EnableWordWrap ? ", word-wrap on" : "") +
-                        (GrowCells ? ", rows auto-grow" : "") + ".");
+                        (GrowCells ? ", rows auto-grow" : "") +
+                        (!Mathf.Approximately(UIWidthScale, 1f) || !Mathf.Approximately(UIHeightScale, 1f)
+                            ? $", panel {UIWidthScale:F2}x{UIHeightScale:F2}" : "") + ".");
         }
 
-        private static MethodBase ResolveSetupMultiLineSubmit()
-        {
-            var type = AccessTools.TypeByName("InputFieldExtensions");
-            if (type == null)
-                return null;
-            // Extension method: static void SetupMultiLineSubmit(this TMP_InputField inputField)
-            return AccessTools.Method(type, "SetupMultiLineSubmit");
-        }
-
-        // Patches every (non-generic) method literally named "Setup" on the given cell type, so we catch the
-        // right overload regardless of its argument list. Returns how many it patched.
-        private static int PatchCellSetup(Harmony harmony, string typeName)
+        // Patches every non-generic method named "Setup" on the given type. Returns how many it patched.
+        private static int PatchSetupMethod(Harmony harmony, string typeName, Type patchType)
         {
             var type = AccessTools.TypeByName(typeName);
             if (type == null)
             {
-                Log.LogWarning($"Cell type '{typeName}' not found — its rows won't auto-grow.");
+                Log.LogWarning($"Type '{typeName}' not found.");
                 return 0;
             }
 
-            var postfix = new HarmonyMethod(typeof(CellSetup_Patch), nameof(CellSetup_Patch.Postfix));
+            var postfix = new HarmonyMethod(patchType, "Postfix");
             int patched = 0;
             foreach (var m in AccessTools.GetDeclaredMethods(type))
             {
@@ -170,6 +213,14 @@ namespace ChillMoreTodoText
                 }
             }
             return patched;
+        }
+
+        private static MethodBase ResolveSetupMultiLineSubmit()
+        {
+            var type = AccessTools.TypeByName("InputFieldExtensions");
+            if (type == null)
+                return null;
+            return AccessTools.Method(type, "SetupMultiLineSubmit");
         }
     }
 
@@ -198,6 +249,12 @@ namespace ChillMoreTodoText
 
                 // 0 = unlimited characters (TMP convention). Otherwise apply the configured hard cap.
                 inputField.characterLimit = Plugin.MaxCharacters;
+
+                // The whole entry is shown (the row grows to fit), so the box never needs to scroll its own
+                // contents. Zeroing scrollSensitivity stops the field from eating the mouse wheel, so the
+                // to-do list scrolls normally instead of getting stuck inside one box.
+                if (Plugin.DisableInputScroll)
+                    inputField.scrollSensitivity = 0f;
 
                 TMP_Text text = inputField.textComponent;
                 if (text != null)
@@ -250,14 +307,16 @@ namespace ChillMoreTodoText
     }
 
     /// <summary>
-    /// Sits on a to-do cell and keeps the row's height matched to its text. Mirrors the game's own
-    /// <c>AutoSizingHeightInputFieldView</c> pattern (resize a RectTransform to the input field's preferred
-    /// height) but drives it through the cell's layout so the rows below reflow.
+    /// Sits on a to-do cell and keeps the row's height matched to its text, and widens the cell
+    /// horizontally to match <c>Plugin.UIWidthScale</c>.
     ///
-    /// Strategy, picked from what the cell actually lives in:
-    ///   • parent layout group that controls child height → write a LayoutElement.preferredHeight
-    ///   • parent layout group that doesn't control height → set the RectTransform height directly
-    ///   • no layout group found → fall back to TMP font auto-size (shrink to fit) so nothing overlaps
+    /// Vertical growth: the cell root is resized so the layout opens a taller slot. Fixed-height
+    /// children (background box, input field) are also grown by the same delta so they fill the slot.
+    /// Stretch-anchored children follow automatically.
+    ///
+    /// Horizontal widening: the cell root and input field are widened by the panel's width delta.
+    /// The cell root has center-x pivot, so its anchoredPosition is shifted to keep the left edge
+    /// in place. The input field is widened and shifted left to keep its right edge (buttons) in place.
     /// </summary>
     internal sealed class TodoCellAutoSizer : MonoBehaviour
     {
@@ -268,10 +327,23 @@ namespace ChillMoreTodoText
         private HorizontalOrVerticalLayoutGroup _group;
         private Transform _lastParent;
         private bool _groupControlsHeight;
+        private bool _groupControlsWidth;
         private bool _noGroupFallbackApplied;
         private float _minHeight;
-        private float _lastApplied = -1f;
         private bool _haveMinHeight;
+
+        // Fixed-height inner pieces (background box, input field viewport, etc.) that need to grow
+        // vertically with the cell. Captured once at vanilla heights.
+        private RectTransform[] _innerChain;
+        private float[] _innerChainMin;
+
+        // Vanilla cell width/position and input field width/position for horizontal scaling.
+        private float _baseCellWidth;
+        private float _baseCellPosX;
+        private RectTransform _inputRt;
+        private float _origInputPosY;
+        private float _origInputWidth;
+        private float _origInputPosX;
 
         private void Awake()
         {
@@ -281,6 +353,55 @@ namespace ChillMoreTodoText
                 _text = _input.textComponent;
         }
 
+        // Captures the chain of fixed-height RectTransforms from the text component up to (but not
+        // including) the cell root, plus the input field's base position/size for horizontal scaling.
+        // Also pins text to top alignment. Called once on the first laid-out frame.
+        private void CaptureInnerChain()
+        {
+            if (_text != null)
+                _text.verticalAlignment = VerticalAlignmentOptions.Top;
+
+            _inputRt = _input != null ? _input.transform as RectTransform : null;
+            if (_inputRt != null)
+            {
+                _origInputPosY = _inputRt.anchoredPosition.y;
+                _origInputWidth = _inputRt.rect.width;
+                _origInputPosX = _inputRt.anchoredPosition.x;
+            }
+
+            var chain = new List<RectTransform>();
+            var mins = new List<float>();
+            Transform start = _text != null ? _text.transform : (_input != null ? _input.transform : null);
+            Transform cur = start;
+            while (cur != null && cur != _rt && cur != transform.parent)
+            {
+                if (cur is RectTransform crt && crt != _rt)
+                {
+                    chain.Add(crt);
+                    mins.Add(crt.rect.height);
+                }
+                cur = cur.parent;
+            }
+            _innerChain = chain.ToArray();
+            _innerChainMin = mins.ToArray();
+
+            // Capture the cell's vanilla width and position for horizontal scaling.
+            _baseCellWidth = _rt.rect.width;
+            _baseCellPosX = _rt.anchoredPosition.x;
+        }
+
+        // TMP's preferredHeight can under-report when the rect width isn't settled, so measure
+        // explicitly at the live text width to fit every line.
+        private float MeasureTextHeight()
+        {
+            if (_text == null)
+                return 0f;
+            float width = _text.rectTransform.rect.width;
+            if (width > 1f)
+                return _text.GetPreferredValues(_text.text, width, 0f).y;
+            return _text.preferredHeight;
+        }
+
         private void EnsureGroup()
         {
             if (transform.parent == _lastParent)
@@ -288,7 +409,8 @@ namespace ChillMoreTodoText
             _lastParent = transform.parent;
             _group = GetComponentInParent<HorizontalOrVerticalLayoutGroup>();
             _groupControlsHeight = _group != null && _group.childControlHeight;
-            if (_groupControlsHeight && _layoutElement == null)
+            _groupControlsWidth = _group != null && _group.childControlWidth;
+            if ((_groupControlsHeight || _groupControlsWidth) && _layoutElement == null)
             {
                 _layoutElement = GetComponent<LayoutElement>();
                 if (_layoutElement == null)
@@ -303,7 +425,7 @@ namespace ChillMoreTodoText
 
             EnsureGroup();
 
-            // No layout group to reflow into → can't safely grow without overlapping neighbours.
+            // No layout group → can't safely grow without overlapping neighbours.
             // Shrink the font to fit the existing box instead (applied once).
             if (_group == null)
             {
@@ -319,29 +441,278 @@ namespace ChillMoreTodoText
             {
                 _minHeight = _rt.rect.height;
                 if (_minHeight <= 1f)
-                    return; // not laid out yet — try again next frame
+                    return; // not laid out yet
                 _haveMinHeight = true;
+                CaptureInnerChain();
             }
 
-            float desired = Mathf.Max(_minHeight, _text.preferredHeight + Plugin.CellPadding);
-            if (Mathf.Abs(desired - _lastApplied) < 0.5f)
-                return;
-            _lastApplied = desired;
+            bool changed = ApplyVerticalGrowth();
+            changed |= ApplyHorizontalWidening();
 
-            if (_groupControlsHeight && _layoutElement != null)
-            {
-                _layoutElement.minHeight = desired;
-                _layoutElement.preferredHeight = desired;
-            }
-            else
-            {
-                Vector2 sd = _rt.sizeDelta;
-                sd.y = desired;
-                _rt.sizeDelta = sd;
-            }
-
-            if (_rt.parent is RectTransform parent)
+            if (changed && _rt.parent is RectTransform parent)
                 LayoutRebuilder.MarkLayoutForRebuild(parent);
+        }
+
+        // Grows the cell root and its fixed-height inner pieces vertically to fit the text.
+        // Returns true if any RectTransform was modified.
+        private bool ApplyVerticalGrowth()
+        {
+            float desired = Mathf.Max(_minHeight, MeasureTextHeight() + Plugin.CellPadding);
+            float delta = desired - _minHeight;
+            bool changed = false;
+
+            // Grow the cell root. Compare against the live value we control so we detect when
+            // the game's layout system resets it back to vanilla each frame.
+            float current = (_groupControlsHeight && _layoutElement != null)
+                ? _layoutElement.preferredHeight
+                : _rt.sizeDelta.y;
+
+            if (Mathf.Abs(desired - current) >= 0.5f)
+            {
+                if (_groupControlsHeight && _layoutElement != null)
+                {
+                    _layoutElement.minHeight = desired;
+                    _layoutElement.preferredHeight = desired;
+                }
+                else
+                {
+                    Vector2 sd = _rt.sizeDelta;
+                    sd.y = desired;
+                    _rt.sizeDelta = sd;
+                }
+                changed = true;
+            }
+
+            // Grow fixed-height inner pieces by the same delta. Stretch-anchored ones follow automatically.
+            if (_innerChain != null)
+            {
+                for (int i = 0; i < _innerChain.Length; i++)
+                {
+                    RectTransform crt = _innerChain[i];
+                    if (crt == null)
+                        continue;
+                    if (Mathf.Abs(crt.anchorMax.y - crt.anchorMin.y) > 0.0001f)
+                        continue;
+                    float target = _innerChainMin[i] + delta;
+                    if (Mathf.Abs(crt.sizeDelta.y - target) < 0.5f)
+                        continue;
+                    Vector2 csd = crt.sizeDelta;
+                    csd.y = target;
+                    crt.sizeDelta = csd;
+                    changed = true;
+                }
+            }
+
+            // Counter center-anchor drift: the input field slides down by half the growth.
+            // Nudge it back up so its top stays aligned with the cell's top.
+            if (_inputRt != null)
+            {
+                float targetY = _origInputPosY + delta * 0.5f;
+                Vector2 ap = _inputRt.anchoredPosition;
+                if (Mathf.Abs(ap.y - targetY) >= 0.5f)
+                {
+                    ap.y = targetY;
+                    _inputRt.anchoredPosition = ap;
+                    changed = true;
+                }
+            }
+
+            return changed;
+        }
+
+        // Widens the cell root and input field horizontally to match UIWidthScale.
+        // The cell root (center-x pivot) is shifted right by widthDelta/2 to keep its left edge in place.
+        // The input field (center-x pivot) is shifted left by widthDelta/2 to keep its right edge in place.
+        // Returns true if any RectTransform was modified.
+        private bool ApplyHorizontalWidening()
+        {
+            if (Mathf.Approximately(Plugin.UIWidthScale, 1f) || _baseCellWidth <= 1f)
+                return false;
+
+            float targetW = _baseCellWidth * Plugin.UIWidthScale;
+            float widthDelta = targetW - _baseCellWidth;
+            bool changed = false;
+
+            // Cell root: drive via LayoutElement if the group controls width, otherwise set sizeDelta directly.
+            if (_groupControlsWidth && _layoutElement != null)
+            {
+                if (Mathf.Abs(_layoutElement.preferredWidth - targetW) > 0.5f)
+                {
+                    _layoutElement.minWidth = targetW;
+                    _layoutElement.preferredWidth = targetW;
+                    changed = true;
+                }
+            }
+            else if (Mathf.Abs(_rt.anchorMax.x - _rt.anchorMin.x) < 0.0001f)
+            {
+                if (Mathf.Abs(_rt.sizeDelta.x - targetW) > 0.5f)
+                {
+                    Vector2 sd = _rt.sizeDelta;
+                    sd.x = targetW;
+                    _rt.sizeDelta = sd;
+                    changed = true;
+                }
+                // Shift right by half the delta so the left edge stays at its vanilla position.
+                float targetPosX = _baseCellPosX + widthDelta * 0.5f;
+                Vector2 ap = _rt.anchoredPosition;
+                if (Mathf.Abs(ap.x - targetPosX) > 0.5f)
+                {
+                    ap.x = targetPosX;
+                    _rt.anchoredPosition = ap;
+                    changed = true;
+                }
+            }
+
+            // Widen ONLY the input field (not CellUIParent, which holds buttons).
+            // Shift left by widthDelta/2 so the right edge stays put and it extends leftward.
+            if (_inputRt != null && Mathf.Abs(_inputRt.anchorMax.x - _inputRt.anchorMin.x) < 0.0001f)
+            {
+                float inputTargetW = _origInputWidth + widthDelta;
+                Vector2 isd = _inputRt.sizeDelta;
+                if (Mathf.Abs(isd.x - inputTargetW) > 0.5f)
+                {
+                    isd.x = inputTargetW;
+                    _inputRt.sizeDelta = isd;
+                    changed = true;
+                }
+                float inputTargetPosX = _origInputPosX - widthDelta * 0.5f;
+                Vector2 iap = _inputRt.anchoredPosition;
+                if (Mathf.Abs(iap.x - inputTargetPosX) > 0.5f)
+                {
+                    iap.x = inputTargetPosX;
+                    _inputRt.anchoredPosition = iap;
+                    changed = true;
+                }
+            }
+
+            return changed;
+        }
+    }
+
+    /// <summary>
+    /// Postfix for the to-do list panel's Setup. Attaches one <see cref="TodoListUIScaler"/>.
+    /// Idempotent — re-running Setup is harmless.
+    /// </summary>
+    internal static class PanelSetup_Patch
+    {
+        internal static void Postfix(MonoBehaviour __instance)
+        {
+            if (__instance == null)
+                return;
+            try
+            {
+                if (__instance.GetComponent<TodoListUIScaler>() == null)
+                    __instance.gameObject.AddComponent<TodoListUIScaler>();
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"Failed to attach panel scaler: {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sits on the to-do list panel root and enforces <c>Plugin.UIWidthScale</c> / <c>Plugin.UIHeightScale</c>
+    /// by resizing the panel's <c>sizeDelta</c> (not <c>localScale</c>, so text stays crisp).
+    ///
+    /// The panel is stretch-anchored, so sizeDelta is an offset relative to the anchors, not the actual
+    /// size. We use: targetSizeDelta = baseSizeDelta + (scale - 1) * baseSize. The game may reset sizes
+    /// during animations/tab changes, so we re-apply in LateUpdate. Also grows the Scroll View width and
+    /// shifts the CompleteList right to match the widened panel.
+    /// </summary>
+    internal sealed class TodoListUIScaler : MonoBehaviour
+    {
+        private RectTransform _rt;
+        private Vector2 _baseSize;
+        private Vector2 _baseSizeDelta;
+        private bool _haveBase;
+
+        // Inner elements with fixed width/position that don't follow the panel widening.
+        private RectTransform _scrollView;
+        private float _scrollViewBaseWidth;
+        private RectTransform _completeList;
+        private float _completeListBaseX;
+
+        private void Awake()
+        {
+            _rt = transform as RectTransform;
+        }
+
+        private void LateUpdate()
+        {
+            if (_rt == null)
+                return;
+
+            if (!_haveBase)
+            {
+                Rect r = _rt.rect;
+                if (r.width <= 1f || r.height <= 1f)
+                    return;
+                _baseSize = new Vector2(r.width, r.height);
+                _baseSizeDelta = _rt.sizeDelta;
+                _haveBase = true;
+
+                // Find the task-list Scroll View and CompleteList by name among direct children.
+                for (int i = 0; i < _rt.childCount; i++)
+                {
+                    var child = _rt.GetChild(i) as RectTransform;
+                    if (child == null) continue;
+                    if (child.name == "Scroll View" && _scrollView == null)
+                    {
+                        _scrollView = child;
+                        _scrollViewBaseWidth = child.rect.width;
+                    }
+                    if (child.name == "CompleteList" && _completeList == null)
+                    {
+                        _completeList = child;
+                        _completeListBaseX = child.anchoredPosition.x;
+                    }
+                }
+            }
+
+            float widthDelta = (Plugin.UIWidthScale - 1f) * _baseSize.x;
+            float targetX = _baseSizeDelta.x + widthDelta;
+            float targetY = _baseSizeDelta.y + (Plugin.UIHeightScale - 1f) * _baseSize.y;
+            Vector2 sd = _rt.sizeDelta;
+            bool changed = false;
+
+            if (Mathf.Abs(sd.x - targetX) > 0.5f)
+            {
+                sd.x = targetX;
+                changed = true;
+            }
+            if (Mathf.Abs(sd.y - targetY) > 0.5f)
+            {
+                sd.y = targetY;
+                changed = true;
+            }
+
+            if (changed)
+                _rt.sizeDelta = sd;
+
+            // Grow the task-list Scroll View width so task bars fill the widened panel.
+            if (_scrollView != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
+            {
+                float svTarget = _scrollViewBaseWidth + widthDelta;
+                Vector2 svSd = _scrollView.sizeDelta;
+                if (Mathf.Abs(svSd.x - svTarget) > 0.5f)
+                {
+                    svSd.x = svTarget;
+                    _scrollView.sizeDelta = svSd;
+                }
+            }
+
+            // Shift the CompleteList right so it sits at the new right edge.
+            if (_completeList != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
+            {
+                float clTargetX = _completeListBaseX + widthDelta;
+                Vector2 clAp = _completeList.anchoredPosition;
+                if (Mathf.Abs(clAp.x - clTargetX) > 0.5f)
+                {
+                    clAp.x = clTargetX;
+                    _completeList.anchoredPosition = clAp;
+                }
+            }
         }
     }
 }
