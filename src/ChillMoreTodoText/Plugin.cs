@@ -16,7 +16,7 @@ namespace ChillMoreTodoText
     {
         public const string Guid = "com.flamfoof.chillmoretodotext";
         public const string Name = "Chill More Todo Text";
-        public const string Version = "1.1.0";
+        public const string Version = "1.2.0";
 
         internal static ManualLogSource Log;
 
@@ -154,15 +154,17 @@ namespace ChillMoreTodoText
                     typeof(SetupMultiLineSubmit_Patch), nameof(SetupMultiLineSubmit_Patch.Postfix)));
             }
 
-            // (2) Row growth. Attach a TodoCellAutoSizer to each to-do cell as it's built.
-            if (GrowCells)
+            // (2) Per-row sizing. Attach a TodoCellAutoSizer to each to-do cell as it's built.
+            // Needed when rows grow to fit text (GrowCells) AND when the panel is widened
+            // (UIWidthScale), since each row has to stretch to the wider list. Hook if either is on.
+            if (GrowCells || !Mathf.Approximately(UIWidthScale, 1f))
             {
                 int hooked = 0;
                 hooked += PatchSetupMethod(harmony, "TodoUI", typeof(CellSetup_Patch));
                 hooked += PatchSetupMethod(harmony, "TodoTaskListItemView", typeof(CellSetup_Patch));
                 if (hooked == 0)
-                    Log.LogWarning("Could not hook any to-do cell Setup method — rows won't auto-grow. " +
-                                   "(Text limits are unaffected.)");
+                    Log.LogWarning("Could not hook any to-do cell Setup method — rows won't auto-grow " +
+                                   "or widen. (Text limits are unaffected.)");
             }
 
             // (3) Panel resizing. Widen/lengthen the to-do list panel via sizeDelta (not scale, so text
@@ -408,6 +410,18 @@ namespace ChillMoreTodoText
                 return;
             _lastParent = transform.parent;
             _group = GetComponentInParent<HorizontalOrVerticalLayoutGroup>();
+
+            // Make every row stretch to the (widened) task-list width. The vanilla list group
+            // runs with childControlWidth = false, so each row keeps its fixed ~336px width and
+            // never follows the panel — leaving a blank gap on the right when UIWidthScale > 1.
+            // Turning child-width control on (force-expand is already on) lets Unity stretch each
+            // row to the content width instead of us fighting its layout per frame.
+            if (_group != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
+            {
+                if (!_group.childControlWidth) _group.childControlWidth = true;
+                if (!_group.childForceExpandWidth) _group.childForceExpandWidth = true;
+            }
+
             _groupControlsHeight = _group != null && _group.childControlHeight;
             _groupControlsWidth = _group != null && _group.childControlWidth;
             if ((_groupControlsHeight || _groupControlsWidth) && _layoutElement == null)
@@ -457,6 +471,10 @@ namespace ChillMoreTodoText
         // Returns true if any RectTransform was modified.
         private bool ApplyVerticalGrowth()
         {
+            // The sizer is also attached for width-only scaling; skip vertical growth if disabled.
+            if (!Plugin.GrowCells)
+                return false;
+
             float desired = Mathf.Max(_minHeight, MeasureTextHeight() + Plugin.CellPadding);
             float delta = desired - _minHeight;
             bool changed = false;
@@ -520,31 +538,24 @@ namespace ChillMoreTodoText
             return changed;
         }
 
-        // Widens the cell root and input field horizontally to match UIWidthScale.
-        // The cell root (center-x pivot) is shifted right by widthDelta/2 to keep its left edge in place.
-        // The input field (center-x pivot) is shifted left by widthDelta/2 to keep its right edge in place.
-        // Returns true if any RectTransform was modified.
+        // Widens the row's text input to match UIWidthScale so more text fits per line.
+        // The row background itself is stretched to the list width by the parent layout group
+        // (see EnsureGroup), so we only size the input here. The input is anchored to the row's
+        // right edge, so we grow its width and shift it left by half the delta to keep that
+        // right edge (and the buttons beside it) in place. Returns true if anything changed.
         private bool ApplyHorizontalWidening()
         {
             if (Mathf.Approximately(Plugin.UIWidthScale, 1f) || _baseCellWidth <= 1f)
                 return false;
 
-            float targetW = _baseCellWidth * Plugin.UIWidthScale;
-            float widthDelta = targetW - _baseCellWidth;
+            float widthDelta = _baseCellWidth * (Plugin.UIWidthScale - 1f);
             bool changed = false;
 
-            // Cell root: drive via LayoutElement if the group controls width, otherwise set sizeDelta directly.
-            if (_groupControlsWidth && _layoutElement != null)
+            // Fallback: if no layout group is stretching the row to fill the list, widen the
+            // row's own rect (keeping its left edge fixed). Normally the group handles this.
+            if (!_groupControlsWidth && Mathf.Abs(_rt.anchorMax.x - _rt.anchorMin.x) < 0.0001f)
             {
-                if (Mathf.Abs(_layoutElement.preferredWidth - targetW) > 0.5f)
-                {
-                    _layoutElement.minWidth = targetW;
-                    _layoutElement.preferredWidth = targetW;
-                    changed = true;
-                }
-            }
-            else if (Mathf.Abs(_rt.anchorMax.x - _rt.anchorMin.x) < 0.0001f)
-            {
+                float targetW = _baseCellWidth + widthDelta;
                 if (Mathf.Abs(_rt.sizeDelta.x - targetW) > 0.5f)
                 {
                     Vector2 sd = _rt.sizeDelta;
@@ -552,7 +563,6 @@ namespace ChillMoreTodoText
                     _rt.sizeDelta = sd;
                     changed = true;
                 }
-                // Shift right by half the delta so the left edge stays at its vanilla position.
                 float targetPosX = _baseCellPosX + widthDelta * 0.5f;
                 Vector2 ap = _rt.anchoredPosition;
                 if (Mathf.Abs(ap.x - targetPosX) > 0.5f)
@@ -563,8 +573,8 @@ namespace ChillMoreTodoText
                 }
             }
 
-            // Widen ONLY the input field (not CellUIParent, which holds buttons).
-            // Shift left by widthDelta/2 so the right edge stays put and it extends leftward.
+            // Widen the input field (the text area). Anchored to the row's right edge, so grow
+            // its width and shift left by half the delta to keep the right edge in place.
             if (_inputRt != null && Mathf.Abs(_inputRt.anchorMax.x - _inputRt.anchorMin.x) < 0.0001f)
             {
                 float inputTargetW = _origInputWidth + widthDelta;
@@ -652,23 +662,23 @@ namespace ChillMoreTodoText
                 _baseSizeDelta = _rt.sizeDelta;
                 _haveBase = true;
 
-                // Find the task-list Scroll View and CompleteList by name among direct children.
+                // Find the CompleteList by name among direct children (best-effort).
                 for (int i = 0; i < _rt.childCount; i++)
                 {
                     var child = _rt.GetChild(i) as RectTransform;
-                    if (child == null) continue;
-                    if (child.name == "Scroll View" && _scrollView == null)
-                    {
-                        _scrollView = child;
-                        _scrollViewBaseWidth = child.rect.width;
-                    }
-                    if (child.name == "CompleteList" && _completeList == null)
+                    if (child != null && child.name == "CompleteList" && _completeList == null)
                     {
                         _completeList = child;
                         _completeListBaseX = child.anchoredPosition.x;
                     }
                 }
             }
+
+            // Resolve the task-list Scroll View lazily: the list can be empty on the first frame,
+            // so keep trying until we find the ScrollRect that actually holds the TodoCell rows
+            // (falling back to a direct child literally named "Scroll View").
+            if (_scrollView == null)
+                ResolveScrollView();
 
             float widthDelta = (Plugin.UIWidthScale - 1f) * _baseSize.x;
             float targetX = _baseSizeDelta.x + widthDelta;
@@ -713,6 +723,54 @@ namespace ChillMoreTodoText
                     _completeList.anchoredPosition = clAp;
                 }
             }
+        }
+
+        // Finds the task-list scroll area so it can be widened with the panel. Prefers the
+        // ScrollRect whose content actually holds TodoCell rows; otherwise the first descendant
+        // ScrollRect; otherwise a direct child literally named "Scroll View".
+        private void ResolveScrollView()
+        {
+            ScrollRect fallback = null;
+            foreach (var sr in GetComponentsInChildren<ScrollRect>(true))
+            {
+                if (sr == null) continue;
+                if (fallback == null) fallback = sr;
+                if (sr.content == null) continue;
+                for (int i = 0; i < sr.content.childCount; i++)
+                {
+                    var n = sr.content.GetChild(i).name;
+                    if (n != null && n.StartsWith("TodoCell"))
+                    {
+                        CaptureScrollView(sr.transform as RectTransform);
+                        return;
+                    }
+                }
+            }
+
+            if (fallback != null)
+            {
+                CaptureScrollView(fallback.transform as RectTransform);
+                return;
+            }
+
+            for (int i = 0; i < _rt.childCount; i++)
+            {
+                var child = _rt.GetChild(i) as RectTransform;
+                if (child != null && child.name == "Scroll View")
+                {
+                    CaptureScrollView(child);
+                    return;
+                }
+            }
+        }
+
+        private void CaptureScrollView(RectTransform rt)
+        {
+            if (rt == null) return;
+            // Only capture once the rect is laid out, so the base width is the real vanilla width.
+            if (rt.rect.width <= 1f) return;
+            _scrollView = rt;
+            _scrollViewBaseWidth = rt.rect.width;
         }
     }
 }
