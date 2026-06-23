@@ -35,6 +35,10 @@ Configure
     RemoveEllipsis = true    ; stop cutting long text off with "..."
     EnableWordWrap = true    ; wrap long lines instead of running off the side
 
+    [Layout]
+    GrowCellsToFitText = true ; rows grow to fit the text (false = vanilla fixed height)
+    CellPadding = 24          ; extra spacing when a row grows
+
 Uninstall
 ---------
   Delete  <game>\BepInEx\plugins\ChillMoreTodoText.dll

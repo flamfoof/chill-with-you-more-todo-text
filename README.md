@@ -40,6 +40,14 @@ respected for all later typing — and because the postfix fires every time a ce
 to-do rows created later as you scroll or switch lists. Clean, reversible, and survives game updates (no
 patched DLLs on disk).
 
+**Rows that grow to fit.** Removing the truncation alone just lets long text spill out of the fixed-height
+cell. So a second patch hooks each to-do cell's `Setup` (`TodoUI`, `TodoTaskListItemView`) and attaches a tiny
+`TodoCellAutoSizer` component. Mirroring the game's own `AutoSizingHeightInputFieldView` pattern (resize a
+`RectTransform` to the input field's `preferredHeight`), it grows the row to fit its text and reflows the rows
+below it. It adapts to whatever the cell lives in: a layout group that controls child height → it writes a
+`LayoutElement.preferredHeight`; one that doesn't → it sets the height directly; no layout group at all → it
+falls back to TMP font auto-size so nothing ever overlaps.
+
 The game targets the **Mono** scripting backend (Unity `2022.3.62f2`), which is why BepInEx 5 + Harmony is the
 right tool here — no IL2CPP, and the gameplay assembly isn't name-obfuscated.
 
@@ -116,16 +124,25 @@ MaxCharacters = 0
 RemoveEllipsis = true
 ## Wrap long lines instead of running off the side of the box.
 EnableWordWrap = true
+
+[Layout]
+## Grow each to-do row to fit its text (and push the rows below it down).
+GrowCellsToFitText = true
+## Extra vertical padding (px) added when a row grows.
+CellPadding = 24
 ```
 
 Restart the game (or reopen the to-do panel) to apply.
 
 ## Caveats
 
-- If a future game update renames `SetupMultiLineSubmit`, the plugin logs a warning
-  (`Could not find InputFieldExtensions.SetupMultiLineSubmit …`) and falls back to vanilla behavior.
-- The to-do cells are laid out by the game's UI. Raising `MaxLines` a lot lets entries grow tall; if a very
-  long entry ever overlaps neighbouring rows on your layout, lower `MaxLines` or set `RemoveEllipsis = false`.
+- If a future game update renames `SetupMultiLineSubmit` or the cell `Setup` methods, the plugin logs a
+  warning (`Could not find …` / `Could not hook any to-do cell Setup method …`) and falls back to vanilla
+  behavior for that part.
+- Very long entries make their row tall, so the list fills up faster — that's expected. Tune `CellPadding` if
+  rows feel cramped/roomy, or set `GrowCellsToFitText = false` to keep the vanilla fixed-height rows (text
+  then shrinks to fit instead).
+- Existing tasks may need the to-do panel reopened once so they re-measure at the new height.
 
 ## Repo layout
 
@@ -133,6 +150,7 @@ Restart the game (or reopen the to-do panel) to apply.
 src/ChillMoreTodoText/   Plugin source (Plugin.cs) + csproj
 installer/               One-click Windows installer (GUI + headless)
 dist/                    Built plugin DLL the installer ships
+STEAM_GUIDE.md           Copy/paste Steam Community guide (BBCode)
 Directory.Build.props    Default game paths (override per-machine)
 nuget.config             Adds the BepInEx NuGet feed
 decompiled/              Local reference only — gitignored, never committed
