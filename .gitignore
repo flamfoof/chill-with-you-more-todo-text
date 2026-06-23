@@ -1,0 +1,24 @@
+# --- Copyrighted game code: NEVER commit ---
+# The decompiled Assembly-CSharp belongs to the game's authors (Nestopia).
+# It is kept locally only as a reference for writing patches.
+decompiled/
+*.decompiled.cs
+
+# Local references to the game's own DLLs (do not redistribute)
+libs/
+
+# --- Build output ---
+build/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+
+# NuGet
+*.nupkg
+packages/
+
+# OS
+Thumbs.db
+.DS_Store

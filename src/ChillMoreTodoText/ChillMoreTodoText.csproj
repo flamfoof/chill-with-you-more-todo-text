@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>ChillMoreTodoText</AssemblyName>
+    <Product>ChillMoreTodoText</Product>
+    <Version>1.0.0</Version>
+    <LangVersion>latest</LangVersion>
+    <RestoreAdditionalProjectSources>https://api.nuget.org/v3/index.json</RestoreAdditionalProjectSources>
+    <!-- BepInEx plugins don't need the deps; reference assemblies are private. -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- BepInEx 5 (Mono) + HarmonyX, pulled from NuGet -->
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+  </ItemGroup>
+
+  <!-- The game's own Unity assemblies (needed for TMP_InputField / TMP_Text). Not redistributed. -->
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(GameManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(GameManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- UnityEngine.UI: TMP_InputField derives from Selectable / UIBehaviour here. -->
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(GameManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- TextMeshPro: TMP_InputField, TMP_Text, TextOverflowModes. -->
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(GameManagedDir)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- UnityEngine.dll is a facade that forward-references every module; silence the noise. -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);MSB3277;CS0436;CS0618</NoWarn>
+  </PropertyGroup>
+
+  <!-- Keep dist\ (used by the installer) in sync with the freshly built DLL. -->
+  <Target Name="CopyToDist" AfterTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\..\..\dist" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(MSBuildProjectDirectory)\..\..\dist" />
+  </Target>
+
+  <!-- After build, copy the plugin straight into the game's BepInEx plugins folder. -->
+  <Target Name="DeployToGame" AfterTargets="Build" Condition="Exists('$(GameRootDir)\BepInEx\plugins')">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameRootDir)\BepInEx\plugins" />
+    <Message Importance="high" Text="Deployed ChillMoreTodoText.dll -> $(GameRootDir)\BepInEx\plugins" />
+  </Target>
+
+</Project>

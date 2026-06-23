@@ -1,0 +1,12 @@
+<Project>
+
+  <!--
+    Path to the game's Managed folder (contains Assembly-CSharp.dll, UnityEngine*.dll, Unity.TextMeshPro.dll).
+    Override on another machine with:  dotnet build -p:GameManagedDir="X:\path\to\Chill With You_Data\Managed"
+  -->
+  <PropertyGroup>
+    <GameManagedDir Condition="'$(GameManagedDir)' == ''">H:\SteamLibrary\steamapps\common\Chill with You Lo-Fi Story\Chill With You_Data\Managed</GameManagedDir>
+    <GameRootDir Condition="'$(GameRootDir)' == ''">H:\SteamLibrary\steamapps\common\Chill with You Lo-Fi Story</GameRootDir>
+  </PropertyGroup>
+
+</Project>
