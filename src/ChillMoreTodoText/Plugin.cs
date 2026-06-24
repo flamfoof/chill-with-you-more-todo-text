@@ -325,9 +325,10 @@ namespace ChillMoreTodoText
     /// children (background box, input field) are also grown by the same delta so they fill the slot.
     /// Stretch-anchored children follow automatically.
     ///
-    /// Horizontal widening: the cell root and input field are widened by the panel's width delta.
-    /// The cell root has center-x pivot, so its anchoredPosition is shifted to keep the left edge
-    /// in place. The input field is widened and shifted left to keep its right edge (buttons) in place.
+    /// Horizontal widening: the VerticalLayoutGroup on Content is forced to control child widths
+    /// (childControlWidth + childForceExpandWidth) and a LayoutElement with preferredWidth =
+    /// Content width is added so the group sizes the cell to fill Content. Inner point-anchored
+    /// elements (CellUIParent, Buttons, InputField) are widened manually to match.
     /// </summary>
     internal sealed class TodoCellAutoSizer : MonoBehaviour
     {
@@ -338,7 +339,6 @@ namespace ChillMoreTodoText
         private HorizontalOrVerticalLayoutGroup _group;
         private Transform _lastParent;
         private bool _groupControlsHeight;
-        private bool _groupControlsWidth;
         private bool _noGroupFallbackApplied;
         private float _minHeight;
         private bool _haveMinHeight;
@@ -348,13 +348,18 @@ namespace ChillMoreTodoText
         private RectTransform[] _innerChain;
         private float[] _innerChainMin;
 
-        // Vanilla cell width/position and input field width/position for horizontal scaling.
+        // Vanilla cell width and input field width/position for horizontal scaling.
         private float _baseCellWidth;
-        private float _baseCellPosX;
         private RectTransform _inputRt;
         private float _origInputPosY;
         private float _origInputWidth;
         private float _origInputPosX;
+        private RectTransform _cellUiParent;
+        private float _origCellUiParentW;
+        private RectTransform _buttonsRt;
+        private float _origButtonsW;
+
+        private bool _hookedCanvas;
 
         private void Awake()
         {
@@ -362,6 +367,42 @@ namespace ChillMoreTodoText
             _input = GetComponentInChildren<TMP_InputField>(true);
             if (_input != null)
                 _text = _input.textComponent;
+        }
+
+        private void OnEnable()
+        {
+            if (!_hookedCanvas)
+            {
+                Canvas.willRenderCanvases += ApplyWidthAfterLayout;
+                _hookedCanvas = true;
+            }
+        }
+
+        private void OnDisable()
+        {
+            if (_hookedCanvas)
+            {
+                Canvas.willRenderCanvases -= ApplyWidthAfterLayout;
+                _hookedCanvas = false;
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (_hookedCanvas)
+            {
+                Canvas.willRenderCanvases -= ApplyWidthAfterLayout;
+                _hookedCanvas = false;
+            }
+        }
+
+        // Called after all layout passes but before rendering — the last chance to set
+        // sizeDelta without the layout system resetting it.
+        private void ApplyWidthAfterLayout()
+        {
+            if (_rt == null || Mathf.Approximately(Plugin.UIWidthScale, 1f) || _baseCellWidth <= 1f)
+                return;
+            ApplyHorizontalWidening();
         }
 
         // Captures the chain of fixed-height RectTransforms from the text component up to (but not
@@ -380,6 +421,15 @@ namespace ChillMoreTodoText
                 _origInputPosX = _inputRt.anchoredPosition.x;
             }
 
+            // Capture CellUIParent and Buttons for horizontal widening.
+            _cellUiParent = FindChild(_rt, "CellUIParent");
+            if (_cellUiParent != null)
+                _origCellUiParentW = _cellUiParent.sizeDelta.x;
+            if (_cellUiParent != null)
+                _buttonsRt = FindChild(_cellUiParent, "Buttons");
+            if (_buttonsRt != null)
+                _origButtonsW = _buttonsRt.sizeDelta.x;
+
             var chain = new List<RectTransform>();
             var mins = new List<float>();
             Transform start = _text != null ? _text.transform : (_input != null ? _input.transform : null);
@@ -396,9 +446,8 @@ namespace ChillMoreTodoText
             _innerChain = chain.ToArray();
             _innerChainMin = mins.ToArray();
 
-            // Capture the cell's vanilla width and position for horizontal scaling.
+            // Capture the cell's vanilla width for horizontal scaling.
             _baseCellWidth = _rt.rect.width;
-            _baseCellPosX = _rt.anchoredPosition.x;
         }
 
         // TMP's preferredHeight can under-report when the rect width isn't settled, so measure
@@ -420,25 +469,35 @@ namespace ChillMoreTodoText
             _lastParent = transform.parent;
             _group = GetComponentInParent<HorizontalOrVerticalLayoutGroup>();
 
-            // Make every row stretch to the (widened) task-list width. The vanilla list group
-            // runs with childControlWidth = false, so each row keeps its fixed ~336px width and
-            // never follows the panel — leaving a blank gap on the right when UIWidthScale > 1.
-            // Turning child-width control on (force-expand is already on) lets Unity stretch each
-            // row to the content width instead of us fighting its layout per frame.
+            if (Plugin.DiagnosticDump)
+                Plugin.Log.LogInfo($"[EnsureGroup] cell='{_rt.name}' parent='{(transform.parent as RectTransform)?.name}' " +
+                                   $"group={(_group != null ? _group.GetType().Name : "null")} " +
+                                   $"childControlW={(_group != null && _group.childControlWidth)} " +
+                                   $"childForceExpandW={(_group != null && _group.childForceExpandWidth)} " +
+                                   $"childControlH={(_group != null && _group.childControlHeight)}");
+
+            // Enable childControlWidth so the layout group respects our LayoutElement.preferredWidth.
+            // Without this, the group ignores preferredWidth and keeps the vanilla 336px width.
             if (_group != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
             {
-                if (!_group.childControlWidth) _group.childControlWidth = true;
-                if (!_group.childForceExpandWidth) _group.childForceExpandWidth = true;
+                bool groupChanged = false;
+                if (!_group.childControlWidth) { _group.childControlWidth = true; groupChanged = true; }
+                if (!_group.childForceExpandWidth) { _group.childForceExpandWidth = true; groupChanged = true; }
+                if (groupChanged && _rt.parent is RectTransform parentRt)
+                    LayoutRebuilder.MarkLayoutForRebuild(parentRt);
             }
 
             _groupControlsHeight = _group != null && _group.childControlHeight;
-            _groupControlsWidth = _group != null && _group.childControlWidth;
-            if ((_groupControlsHeight || _groupControlsWidth) && _layoutElement == null)
+            if (_layoutElement == null)
             {
                 _layoutElement = GetComponent<LayoutElement>();
                 if (_layoutElement == null)
                     _layoutElement = gameObject.AddComponent<LayoutElement>();
             }
+            // flexibleWidth > 0 tells the layout group to give this child extra space when
+            // childForceExpandWidth is true. Without this, the group keeps the prefab's 336px.
+            if (_layoutElement != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
+                _layoutElement.flexibleWidth = 1f;
         }
 
         private void LateUpdate()
@@ -469,10 +528,16 @@ namespace ChillMoreTodoText
                 CaptureInnerChain();
             }
 
-            bool changed = ApplyVerticalGrowth();
-            changed |= ApplyHorizontalWidening();
+            bool vertChanged = ApplyVerticalGrowth();
 
-            if (changed && _rt.parent is RectTransform parent)
+            // Apply horizontal widening in LateUpdate too (before layout pass), in addition to
+            // the willRenderCanvases callback (after layout pass). Setting it in both places
+            // maximizes the chance the width sticks despite the layout system resetting it.
+            ApplyHorizontalWidening();
+
+            // Only rebuild layout for vertical changes. LayoutRebuilder resets sizeDelta.x,
+            // undoing our horizontal widening, so we must not trigger it for width-only changes.
+            if (vertChanged && _rt.parent is RectTransform parent)
                 LayoutRebuilder.MarkLayoutForRebuild(parent);
         }
 
@@ -547,45 +612,92 @@ namespace ChillMoreTodoText
             return changed;
         }
 
-        // Widens the row's text input to match UIWidthScale so more text fits per line.
-        // The row background itself is stretched to the list width by the parent layout group
-        // (see EnsureGroup), so we only size the input here. The input is anchored to the row's
-        // right edge, so we grow its width and shift it left by half the delta to keep that
-        // right edge (and the buttons beside it) in place. Returns true if anything changed.
+        // Widens the cell root and its inner elements to match the Content width.
+        // The cell root uses stretch anchors (anchorMin.x=0, anchorMax.x=1) so it fills Content
+        // regardless of whether the VerticalLayoutGroup has childControlWidth on or off.
+        // Inner point-anchored children (CellUIParent, Buttons, InputField) are widened manually.
+        // Returns true if anything changed.
         private bool ApplyHorizontalWidening()
         {
             if (Mathf.Approximately(Plugin.UIWidthScale, 1f) || _baseCellWidth <= 1f)
                 return false;
 
-            float widthDelta = _baseCellWidth * (Plugin.UIWidthScale - 1f);
+            RectTransform parentRt = _rt.parent as RectTransform;
+            float targetW = parentRt != null ? parentRt.rect.width : _baseCellWidth + (_baseCellWidth * (Plugin.UIWidthScale - 1f));
+            float widthDelta = targetW - _baseCellWidth;
+            if (widthDelta <= 0.5f)
+                return false;
             bool changed = false;
 
-            // Fallback: if no layout group is stretching the row to fill the list, widen the
-            // row's own rect (keeping its left edge fixed). Normally the group handles this.
-            if (!_groupControlsWidth && Mathf.Abs(_rt.anchorMax.x - _rt.anchorMin.x) < 0.0001f)
+            // Switch the cell to horizontal stretch anchors so it fills Content regardless
+            // of the layout group's childControlWidth setting. The game keeps toggling
+            // childControlWidth between true and false; with stretch anchors, the cell
+            // width = parent width either way. Keep pivot at 0.5 so children stay centered.
+            if (Mathf.Abs(_rt.anchorMin.x) > 0.001f || Mathf.Abs(_rt.anchorMax.x - 1f) > 0.001f)
             {
-                float targetW = _baseCellWidth + widthDelta;
-                if (Mathf.Abs(_rt.sizeDelta.x - targetW) > 0.5f)
+                Vector2 aMin = _rt.anchorMin; aMin.x = 0f; _rt.anchorMin = aMin;
+                Vector2 aMax = _rt.anchorMax; aMax.x = 1f; _rt.anchorMax = aMax;
+                changed = true;
+            }
+            // With stretch anchors, sizeDelta.x is the offset from the anchor rect.
+            // Set to 0 so the cell exactly fills Content. Also zero anchoredPosition.x
+            // since stretch anchors mean position is determined by anchors + sizeDelta.
+            if (Mathf.Abs(_rt.sizeDelta.x) > 0.5f)
+            {
+                Vector2 sd = _rt.sizeDelta; sd.x = 0f; _rt.sizeDelta = sd;
+                changed = true;
+            }
+            if (parentRt != null && Mathf.Abs(_rt.anchoredPosition.x) > 0.5f)
+            {
+                Vector2 ap2 = _rt.anchoredPosition; ap2.x = 0f; _rt.anchoredPosition = ap2;
+                changed = true;
+            }
+
+            // Also set preferredWidth so when childControlWidth=true, the layout group
+            // sizes the cell to targetW instead of the prefab's 336px.
+            if (_group != null)
+            {
+                if (!_group.childControlWidth) _group.childControlWidth = true;
+                if (!_group.childForceExpandWidth) _group.childForceExpandWidth = true;
+            }
+            if (_layoutElement != null)
+            {
+                if (Mathf.Abs(_layoutElement.preferredWidth - targetW) > 0.5f)
+                    _layoutElement.preferredWidth = targetW;
+                if (_layoutElement.flexibleWidth < 0f)
+                    _layoutElement.flexibleWidth = 1f;
+            }
+
+            // Widen CellUIParent so stretch-anchored children (BackImage, etc.) fill the cell.
+            // CellUIParent is point-anchored at center (0.5,0.5) of the cell, so increasing its
+            // sizeDelta.x widens it in place. BackImage has stretch anchors within CellUIParent,
+            // so it auto-widens. Buttons is point-anchored, so widen it separately below.
+            if (_cellUiParent != null)
+            {
+                float cupTargetW = _origCellUiParentW + widthDelta;
+                Vector2 cupSd = _cellUiParent.sizeDelta;
+                if (Mathf.Abs(cupSd.x - cupTargetW) > 0.5f)
                 {
-                    Vector2 sd = _rt.sizeDelta;
-                    sd.x = targetW;
-                    _rt.sizeDelta = sd;
-                    changed = true;
-                }
-                float targetPosX = _baseCellPosX + widthDelta * 0.5f;
-                Vector2 ap = _rt.anchoredPosition;
-                if (Mathf.Abs(ap.x - targetPosX) > 0.5f)
-                {
-                    ap.x = targetPosX;
-                    _rt.anchoredPosition = ap;
+                    cupSd.x = cupTargetW;
+                    _cellUiParent.sizeDelta = cupSd;
                     changed = true;
                 }
             }
 
-            // Widen the input field by the full widthDelta. It's anchored to CellUIParent (centered
-            // in the cell), which shifts right by widthDelta/2 when the cell widens. Keeping the
-            // vanilla anchoredPosition.x means the left edge stays put and the right edge extends
-            // rightward along with the buttons.
+            // Widen Buttons (point-anchored at left of CellUIParent, won't auto-stretch).
+            if (_buttonsRt != null)
+            {
+                float btnTargetW = _origButtonsW + widthDelta;
+                Vector2 btnSd = _buttonsRt.sizeDelta;
+                if (Mathf.Abs(btnSd.x - btnTargetW) > 0.5f)
+                {
+                    btnSd.x = btnTargetW;
+                    _buttonsRt.sizeDelta = btnSd;
+                    changed = true;
+                }
+            }
+
+            // Widen the input field by the full widthDelta.
             if (_inputRt != null && Mathf.Abs(_inputRt.anchorMax.x - _inputRt.anchorMin.x) < 0.0001f)
             {
                 float inputTargetW = _origInputWidth + widthDelta;
@@ -596,7 +708,6 @@ namespace ChillMoreTodoText
                     _inputRt.sizeDelta = isd;
                     changed = true;
                 }
-                // No position shift — CellUIParent's rightward drift handles the right edge.
                 Vector2 iap = _inputRt.anchoredPosition;
                 if (Mathf.Abs(iap.x - _origInputPosX) > 0.5f)
                 {
@@ -607,6 +718,17 @@ namespace ChillMoreTodoText
             }
 
             return changed;
+        }
+
+        private static RectTransform FindChild(RectTransform parent, string name)
+        {
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i) as RectTransform;
+                if (child != null && child.name == name)
+                    return child;
+            }
+            return null;
         }
     }
 
@@ -650,7 +772,6 @@ namespace ChillMoreTodoText
 
         // Inner elements with fixed width/position that don't follow the panel widening.
         private RectTransform _scrollView;
-        private float _scrollViewBaseWidth;
         private RectTransform _completeList;
         private float _completeListBaseX;
 
@@ -662,6 +783,8 @@ namespace ChillMoreTodoText
         private float _completeCountTextBaseX;
         private RectTransform _addTodoUI;
         private float _addTodoUIBaseX;
+        private RectTransform _compleateTitle;
+        private float _compleateTitleBaseX;
 
         // One-time diagnostic dump bookkeeping.
         private int _frames;
@@ -711,6 +834,11 @@ namespace ChillMoreTodoText
                         _addTodoUI = child;
                         _addTodoUIBaseX = child.anchoredPosition.x;
                     }
+                    else if (child.name == "CompleateTitle" && _compleateTitle == null)
+                    {
+                        _compleateTitle = child;
+                        _compleateTitleBaseX = child.anchoredPosition.x;
+                    }
                 }
             }
 
@@ -740,10 +868,12 @@ namespace ChillMoreTodoText
             if (changed)
                 _rt.sizeDelta = sd;
 
-            // Grow the task-list Scroll View width so task bars fill the widened panel.
+            // Grow the task-list Scroll View to fill the widened panel with small padding on each side.
+            // Use the panel's live rect.width (just updated above) so the Scroll View tracks the
+            // actual rendered panel size, not a cached base that may have been captured post-scale.
             if (_scrollView != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
             {
-                float svTarget = _scrollViewBaseWidth + widthDelta;
+                float svTarget = _rt.rect.width;
                 Vector2 svSd = _scrollView.sizeDelta;
                 if (Mathf.Abs(svSd.x - svTarget) > 0.5f)
                 {
@@ -773,6 +903,7 @@ namespace ChillMoreTodoText
                 ShiftLeft(_dragButton, _dragButtonBaseX, halfDelta);
                 ShiftLeft(_completeCountText, _completeCountTextBaseX, halfDelta);
                 ShiftLeft(_addTodoUI, _addTodoUIBaseX, halfDelta);
+                ShiftLeft(_compleateTitle, _compleateTitleBaseX, halfDelta);
             }
 
             // One-time diagnostic dump, a few frames after the panel settles.
@@ -807,43 +938,32 @@ namespace ChillMoreTodoText
             try
             {
                 var log = Plugin.Log;
-                log.LogInfo("===== ChillMoreTodoText resize diagnostics =====");
-                log.LogInfo($"[diag] scale W={Plugin.UIWidthScale:F2} H={Plugin.UIHeightScale:F2} baseSize={_baseSize}");
-                log.LogInfo($"[diag] panel   '{_rt.name}' {Fmt(_rt)}");
-
-                ScrollRect sr = _scrollView != null ? _scrollView.GetComponent<ScrollRect>() : null;
-                log.LogInfo($"[diag] scrollV '{(_scrollView != null ? _scrollView.name : "NULL")}' base={_scrollViewBaseWidth:F1} {Fmt(_scrollView)}");
-                RectTransform content = sr != null ? sr.content : null;
-                log.LogInfo($"[diag] content '{(content != null ? content.name : "NULL")}' {Fmt(content)}");
-
-                if (content != null)
-                {
-                    var grp = content.GetComponent<HorizontalOrVerticalLayoutGroup>();
-                    if (grp != null)
-                        log.LogInfo($"[diag] group   ctrlW={grp.childControlWidth} expandW={grp.childForceExpandWidth} " +
-                                    $"ctrlH={grp.childControlHeight} expandH={grp.childForceExpandHeight}");
-
-                    for (int i = 0; i < content.childCount; i++)
-                    {
-                        var cell = content.GetChild(i) as RectTransform;
-                        if (cell == null || !cell.name.StartsWith("TodoCell")) continue;
-                        log.LogInfo($"[diag] cell    '{cell.name}' {Fmt(cell)}");
-                        var input = cell.GetComponentInChildren<TMP_InputField>(true);
-                        if (input != null)
-                        {
-                            var irt = input.transform as RectTransform;
-                            log.LogInfo($"[diag]   input '{irt.name}' {Fmt(irt)}");
-                            var trt = input.textComponent != null ? input.textComponent.rectTransform : null;
-                            log.LogInfo($"[diag]   text  '{(trt != null ? trt.name : "NULL")}' {Fmt(trt)}");
-                        }
-                        break; // first cell only
-                    }
-                }
-                log.LogInfo("===== end resize diagnostics =====");
+                log.LogInfo($"===== ChillMoreTodoText panel hierarchy dump =====");
+                log.LogInfo($"scale W={Plugin.UIWidthScale:F2} H={Plugin.UIHeightScale:F2} baseSize={_baseSize}");
+                DumpNode(_rt, 0, log);
+                log.LogInfo("===== end panel hierarchy dump =====");
             }
             catch (Exception e)
             {
                 Plugin.Log.LogWarning($"Diagnostic dump failed: {e.Message}");
+            }
+        }
+
+        private static void DumpNode(RectTransform rt, int depth, ManualLogSource log)
+        {
+            if (rt == null) return;
+            string indent = new string(' ', depth * 2);
+            float w = rt.rect.width;
+            float h = rt.rect.height;
+            log.LogInfo($"{indent}'{rt.name}' active={rt.gameObject.activeSelf} size=({w:F0}x{h:F0}) " +
+                        $"aMin=({rt.anchorMin.x:F2},{rt.anchorMin.y:F2}) aMax=({rt.anchorMax.x:F2},{rt.anchorMax.y:F2}) " +
+                        $"pivot=({rt.pivot.x:F2},{rt.pivot.y:F2}) sizeDelta=({rt.sizeDelta.x:F2},{rt.sizeDelta.y:F2}) " +
+                        $"anchoredPos=({rt.anchoredPosition.x:F2},{rt.anchoredPosition.y:F2})");
+            for (int i = 0; i < rt.childCount; i++)
+            {
+                var child = rt.GetChild(i) as RectTransform;
+                if (child != null)
+                    DumpNode(child, depth + 1, log);
             }
         }
 
@@ -889,10 +1009,9 @@ namespace ChillMoreTodoText
         private void CaptureScrollView(RectTransform rt)
         {
             if (rt == null) return;
-            // Only capture once the rect is laid out, so the base width is the real vanilla width.
+            // Only capture once the rect is laid out, so we don't grab a zero-width placeholder.
             if (rt.rect.width <= 1f) return;
             _scrollView = rt;
-            _scrollViewBaseWidth = rt.rect.width;
         }
     }
 }
