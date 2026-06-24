@@ -30,6 +30,7 @@ namespace ChillMoreTodoText
         internal static bool DisableInputScroll;
         internal static float UIWidthScale;
         internal static float UIHeightScale;
+        internal static bool DiagnosticDump;
 
         private void Awake()
         {
@@ -104,6 +105,13 @@ namespace ChillMoreTodoText
                 "make the panel taller so more rows are visible without scrolling; e.g. 1.25 = 25% taller. " +
                 "The text itself is not stretched — only the panel's height changes.");
 
+            ConfigEntry<bool> diagCfg = Config.Bind(
+                "Debug",
+                "DiagnosticDump",
+                true,
+                "Log the live geometry of the to-do panel (UI_FacilityTodo) once, a moment after it opens. " +
+                "Used to diagnose resizing issues. Safe to leave off for normal play.");
+
             MaxLines = maxLinesCfg.Value;
             MaxCharacters = maxCharsCfg.Value;
             DisableEllipsis = ellipsisCfg.Value;
@@ -113,6 +121,7 @@ namespace ChillMoreTodoText
             DisableInputScroll = noScrollCfg.Value;
             UIWidthScale = uiWidthScaleCfg.Value;
             UIHeightScale = uiHeightScaleCfg.Value;
+            DiagnosticDump = diagCfg.Value;
 
             if (MaxLines < 0)
             {
@@ -169,7 +178,7 @@ namespace ChillMoreTodoText
 
             // (3) Panel resizing. Widen/lengthen the to-do list panel via sizeDelta (not scale, so text
             // stays crisp). A TodoListUIScaler re-applies the size each frame in case the game resets it.
-            if (!Mathf.Approximately(UIWidthScale, 1f) || !Mathf.Approximately(UIHeightScale, 1f))
+            if (!Mathf.Approximately(UIWidthScale, 1f) || !Mathf.Approximately(UIHeightScale, 1f) || DiagnosticDump)
             {
                 int panelsHooked = 0;
                 panelsHooked += PatchSetupMethod(harmony, "TodoListUI", typeof(PanelSetup_Patch));
@@ -573,8 +582,10 @@ namespace ChillMoreTodoText
                 }
             }
 
-            // Widen the input field (the text area). Anchored to the row's right edge, so grow
-            // its width and shift left by half the delta to keep the right edge in place.
+            // Widen the input field by the full widthDelta. It's anchored to CellUIParent (centered
+            // in the cell), which shifts right by widthDelta/2 when the cell widens. Keeping the
+            // vanilla anchoredPosition.x means the left edge stays put and the right edge extends
+            // rightward along with the buttons.
             if (_inputRt != null && Mathf.Abs(_inputRt.anchorMax.x - _inputRt.anchorMin.x) < 0.0001f)
             {
                 float inputTargetW = _origInputWidth + widthDelta;
@@ -585,11 +596,11 @@ namespace ChillMoreTodoText
                     _inputRt.sizeDelta = isd;
                     changed = true;
                 }
-                float inputTargetPosX = _origInputPosX - widthDelta * 0.5f;
+                // No position shift — CellUIParent's rightward drift handles the right edge.
                 Vector2 iap = _inputRt.anchoredPosition;
-                if (Mathf.Abs(iap.x - inputTargetPosX) > 0.5f)
+                if (Mathf.Abs(iap.x - _origInputPosX) > 0.5f)
                 {
-                    iap.x = inputTargetPosX;
+                    iap.x = _origInputPosX;
                     _inputRt.anchoredPosition = iap;
                     changed = true;
                 }
@@ -643,6 +654,19 @@ namespace ChillMoreTodoText
         private RectTransform _completeList;
         private float _completeListBaseX;
 
+        // Center-anchored elements that drift right when the panel widens. Shift them left
+        // by widthDelta/2 to keep them at their vanilla absolute positions.
+        private RectTransform _dragButton;
+        private float _dragButtonBaseX;
+        private RectTransform _completeCountText;
+        private float _completeCountTextBaseX;
+        private RectTransform _addTodoUI;
+        private float _addTodoUIBaseX;
+
+        // One-time diagnostic dump bookkeeping.
+        private int _frames;
+        private bool _dumped;
+
         private void Awake()
         {
             _rt = transform as RectTransform;
@@ -662,14 +686,30 @@ namespace ChillMoreTodoText
                 _baseSizeDelta = _rt.sizeDelta;
                 _haveBase = true;
 
-                // Find the CompleteList by name among direct children (best-effort).
+                // Find panel-level elements by name among direct children.
                 for (int i = 0; i < _rt.childCount; i++)
                 {
                     var child = _rt.GetChild(i) as RectTransform;
-                    if (child != null && child.name == "CompleteList" && _completeList == null)
+                    if (child == null) continue;
+                    if (child.name == "CompleteList" && _completeList == null)
                     {
                         _completeList = child;
                         _completeListBaseX = child.anchoredPosition.x;
+                    }
+                    else if (child.name == "DragButton" && _dragButton == null)
+                    {
+                        _dragButton = child;
+                        _dragButtonBaseX = child.anchoredPosition.x;
+                    }
+                    else if (child.name == "CompleteCountText (TMP)" && _completeCountText == null)
+                    {
+                        _completeCountText = child;
+                        _completeCountTextBaseX = child.anchoredPosition.x;
+                    }
+                    else if (child.name == "AddTodoUI" && _addTodoUI == null)
+                    {
+                        _addTodoUI = child;
+                        _addTodoUIBaseX = child.anchoredPosition.x;
                     }
                 }
             }
@@ -722,6 +762,88 @@ namespace ChillMoreTodoText
                     clAp.x = clTargetX;
                     _completeList.anchoredPosition = clAp;
                 }
+            }
+
+            // Counter center-anchor drift for panel-level elements. The panel grows rightward
+            // (pivot at left edge), so center-anchored children drift right by widthDelta/2.
+            // Shift them left to keep their vanilla absolute positions.
+            if (!Mathf.Approximately(Plugin.UIWidthScale, 1f))
+            {
+                float halfDelta = widthDelta * 0.5f;
+                ShiftLeft(_dragButton, _dragButtonBaseX, halfDelta);
+                ShiftLeft(_completeCountText, _completeCountTextBaseX, halfDelta);
+                ShiftLeft(_addTodoUI, _addTodoUIBaseX, halfDelta);
+            }
+
+            // One-time diagnostic dump, a few frames after the panel settles.
+            if (Plugin.DiagnosticDump && !_dumped && _haveBase && ++_frames > 30)
+            {
+                _dumped = true;
+                DumpDiagnostics();
+            }
+        }
+
+        private static void ShiftLeft(RectTransform rt, float baseX, float halfDelta)
+        {
+            if (rt == null) return;
+            float targetX = baseX - halfDelta;
+            Vector2 ap = rt.anchoredPosition;
+            if (Mathf.Abs(ap.x - targetX) > 0.5f)
+            {
+                ap.x = targetX;
+                rt.anchoredPosition = ap;
+            }
+        }
+
+        private static string Fmt(RectTransform rt)
+        {
+            if (rt == null) return "NULL";
+            return $"rect={rt.rect.width:F1}x{rt.rect.height:F1} sizeDelta={rt.sizeDelta} pos={rt.anchoredPosition} " +
+                   $"aMin={rt.anchorMin} aMax={rt.anchorMax} pivot={rt.pivot}";
+        }
+
+        private void DumpDiagnostics()
+        {
+            try
+            {
+                var log = Plugin.Log;
+                log.LogInfo("===== ChillMoreTodoText resize diagnostics =====");
+                log.LogInfo($"[diag] scale W={Plugin.UIWidthScale:F2} H={Plugin.UIHeightScale:F2} baseSize={_baseSize}");
+                log.LogInfo($"[diag] panel   '{_rt.name}' {Fmt(_rt)}");
+
+                ScrollRect sr = _scrollView != null ? _scrollView.GetComponent<ScrollRect>() : null;
+                log.LogInfo($"[diag] scrollV '{(_scrollView != null ? _scrollView.name : "NULL")}' base={_scrollViewBaseWidth:F1} {Fmt(_scrollView)}");
+                RectTransform content = sr != null ? sr.content : null;
+                log.LogInfo($"[diag] content '{(content != null ? content.name : "NULL")}' {Fmt(content)}");
+
+                if (content != null)
+                {
+                    var grp = content.GetComponent<HorizontalOrVerticalLayoutGroup>();
+                    if (grp != null)
+                        log.LogInfo($"[diag] group   ctrlW={grp.childControlWidth} expandW={grp.childForceExpandWidth} " +
+                                    $"ctrlH={grp.childControlHeight} expandH={grp.childForceExpandHeight}");
+
+                    for (int i = 0; i < content.childCount; i++)
+                    {
+                        var cell = content.GetChild(i) as RectTransform;
+                        if (cell == null || !cell.name.StartsWith("TodoCell")) continue;
+                        log.LogInfo($"[diag] cell    '{cell.name}' {Fmt(cell)}");
+                        var input = cell.GetComponentInChildren<TMP_InputField>(true);
+                        if (input != null)
+                        {
+                            var irt = input.transform as RectTransform;
+                            log.LogInfo($"[diag]   input '{irt.name}' {Fmt(irt)}");
+                            var trt = input.textComponent != null ? input.textComponent.rectTransform : null;
+                            log.LogInfo($"[diag]   text  '{(trt != null ? trt.name : "NULL")}' {Fmt(trt)}");
+                        }
+                        break; // first cell only
+                    }
+                }
+                log.LogInfo("===== end resize diagnostics =====");
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"Diagnostic dump failed: {e.Message}");
             }
         }
 
