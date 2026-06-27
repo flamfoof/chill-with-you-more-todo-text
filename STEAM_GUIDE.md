@@ -21,7 +21,7 @@ If you write a really long task the row obviously gets pretty tall, so the list 
 
 The to-do boxes now grow to fit whatever you type and show the entire entry from the top, so there's no more scrolling inside a single box and nothing gets clipped off the bottom. Because the whole task is always on screen, the box no longer scrolls its own contents or grabs the mouse wheel — the to-do list itself scrolls normally instead.
 
-If you want the [b]entire to-do list panel[/b] to be bigger — not just the text, but the whole window including rows, buttons, and everything else — use the [b]UIWidthScale[/b] and [b]UIHeightScale[/b] options. They both default to [b]1.0[/b] (vanilla size). Set [b]UIWidthScale[/b] higher to make the panel wider (so text wraps less and more fits per row), and [b]UIHeightScale[/b] higher to make it taller (so more rows are visible without scrolling). The text itself is not stretched — only the panel's dimensions change. For example, 1.25 makes it 25% wider or taller.
+If you want the [b]entire to-do list panel[/b] to be bigger — not just the text, but the whole window including rows, buttons, and everything else — use the [b]UIWidthScale[/b] and [b]UIHeightScale[/b] options. [b]UIWidthScale[/b] defaults to [b]1.5[/b] (50% wider) and [b]UIHeightScale[/b] defaults to [b]1.0[/b] (vanilla height). Set [b]UIWidthScale[/b] higher to make the panel wider (so text wraps less and more fits per row), and [b]UIHeightScale[/b] higher to make it taller (so more rows are visible without scrolling). The text itself is not stretched — only the panel's dimensions change. The Completed list (the slide-out panel on the right) scales proportionally too — it stays closed when closed and opens to the wider width when clicked. The panel repositions on spawn to stay centered, then releases after about a second so you can drag it freely.
 
 [h1]How to install[/h1]
 
@@ -42,9 +42,12 @@ After you run the game once with the mod, you can tweak it here:
 [*][b]EnableWordWrap[/b] — wraps long text instead of running off the side (default true).
 [*][b]GrowCellsToFitText[/b] — rows grow to fit the text (default true). Turn off for the old fixed height.
 [*][b]CellPadding[/b] — extra spacing when a row grows; raise it if rows feel tight (default 24).
-[*][b]DisableInputScroll[/b] — stops a box from scrolling its own contents / grabbing the mouse wheel so the list scrolls normally (default true).
-[*][b]UIWidthScale[/b] — make the to-do list panel wider (default 1.0 = vanilla width). Try 1.25 for 25% wider; text is not stretched.
+[*][b]DisableInputScroll[/b] — stops a box from scrolling its own contents / grabbing the mouse wheel so the list scrolls normally. Also prevents pasted text from shifting out of position (default true).
+[*][b]UIWidthScale[/b] — make the to-do list panel wider (default 1.5 = 50% wider). The panel, the Completed list, and all inner elements scale proportionally; text is not stretched. Set to 1.0 for vanilla width.
 [*][b]UIHeightScale[/b] — make the to-do list panel taller (default 1.0 = vanilla height). Try 1.25 for 25% taller; text is not stretched.
+[*][b]CellPaddingLeft / CellPaddingRight[/b] — padding (px) from the left/right edges of each cell to its elements (default 20 each).
+[*][b]CellPaddingTop / CellPaddingBottom[/b] — padding (px) from the top/bottom of each cell, added to vertical growth so text looks centered (default 20 each).
+[*][b]DiagnosticDump[/b] — logs the live panel geometry once after opening, for troubleshooting layout issues (default false).
 [/list]
 
 Restart the game (or just reopen the to-do panel) after changing anything.
