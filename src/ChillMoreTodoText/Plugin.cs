@@ -16,7 +16,7 @@ namespace ChillMoreTodoText
     {
         public const string Guid = "com.flamfoof.chillmoretodotext";
         public const string Name = "Chill More Todo Text";
-        public const string Version = "1.2.0";
+        public const string Version = "1.3.2";
 
         internal static ManualLogSource Log;
 
