@@ -96,7 +96,7 @@ namespace ChillMoreTodoText
             ConfigEntry<float> uiWidthScaleCfg = Config.Bind(
                 "Layout",
                 "UIWidthScale",
-                1.0f,
+                1.5f,
                 "Scale the width of the to-do list panel. 1.0 = vanilla width (the default). Values above 1.0 " +
                 "make the panel wider so text wraps less and more content fits per row; e.g. 1.25 = 25% wider. " +
                 "The text itself is not stretched — only the panel's width changes.");
@@ -119,28 +119,30 @@ namespace ChillMoreTodoText
             ConfigEntry<float> padLeftCfg = Config.Bind(
                 "Layout",
                 "CellPaddingLeft",
-                10f,
+                20f,
                 "Padding (pixels) from the left edge of each to-do cell to the first element (DragButton). " +
                 "Also used as the gap between left-side elements.");
 
             ConfigEntry<float> padRightCfg = Config.Bind(
                 "Layout",
                 "CellPaddingRight",
-                10f,
+                20f,
                 "Padding (pixels) from the right edge of each to-do cell to the last element (TodoRemoveButton). " +
                 "Also used as the gap between right-side elements.");
 
             ConfigEntry<float> padTopCfg = Config.Bind(
                 "Layout",
                 "CellPaddingTop",
-                10f,
-                "Padding (pixels) from the top edge of each to-do cell. Reserved for future vertical layout use.");
+                20f,
+                "Padding (pixels) from the top edge of each to-do cell. Added to the cell's vertical growth " +
+                "so text looks more centered.");
 
             ConfigEntry<float> padBottomCfg = Config.Bind(
                 "Layout",
                 "CellPaddingBottom",
-                10f,
-                "Padding (pixels) from the bottom edge of each to-do cell. Reserved for future vertical layout use.");
+                20f,
+                "Padding (pixels) from the bottom edge of each to-do cell. Added to the cell's vertical growth " +
+                "so text looks more centered.");
 
             MaxLines = maxLinesCfg.Value;
             MaxCharacters = maxCharsCfg.Value;
@@ -396,6 +398,7 @@ namespace ChillMoreTodoText
         // Inner elements with fixed widths or center anchors that don't auto-stretch
         // when CellUIParent widens. Captured once at vanilla geometry.
         private RectTransform _buttonsRt;
+        private CanvasGroup _buttonsCanvasGroup;
         private float _buttonsBaseWidth;
         private float _buttonsBaseX;
         private RectTransform _checkButtonRt;
@@ -410,6 +413,8 @@ namespace ChillMoreTodoText
         private float _todoRemoveButtonWidth;
         private RectTransform _deadLineCalenderButtonRt;
         private float _deadLineCalenderButtonWidth;
+        private RectTransform _dateTimeRt;
+        private float _dateTimeWidth;
 
         private bool _hookedCanvas;
 
@@ -459,12 +464,12 @@ namespace ChillMoreTodoText
 
         // Captures the chain of fixed-height RectTransforms from the text component up to (but not
         // including) the cell root, plus the input field's base Y position for vertical drift
-        // correction. Also pins text to top alignment and records the vanilla cell width.
+        // correction. Also centers text vertically and records the vanilla cell width.
         // Called once on the first laid-out frame.
         private void CaptureInnerChain()
         {
             if (_text != null)
-                _text.verticalAlignment = VerticalAlignmentOptions.Top;
+                _text.verticalAlignment = VerticalAlignmentOptions.Middle;
 
             _inputRt = _input != null ? _input.transform as RectTransform : null;
             if (_inputRt != null)
@@ -486,6 +491,7 @@ namespace ChillMoreTodoText
                 {
                     _buttonsBaseWidth = _buttonsRt.rect.width;
                     _buttonsBaseX = _buttonsRt.anchoredPosition.x;
+                    _buttonsCanvasGroup = _buttonsRt.GetComponent<CanvasGroup>();
 
                     _dragButtonInnerRt = FindChild(_buttonsRt, "DragButton");
                     if (_dragButtonInnerRt != null)
@@ -497,6 +503,10 @@ namespace ChillMoreTodoText
                     if (_deadLineCalenderButtonRt != null)
                         _deadLineCalenderButtonWidth = _deadLineCalenderButtonRt.rect.width;
                 }
+
+                _dateTimeRt = FindChild(_cellUiParent, "DateTime");
+                if (_dateTimeRt != null)
+                    _dateTimeWidth = _dateTimeRt.rect.width;
 
                 _checkButtonRt = FindChild(_cellUiParent, "CheckButton");
                 if (_checkButtonRt != null)
@@ -617,7 +627,7 @@ namespace ChillMoreTodoText
             if (!Plugin.GrowCells)
                 return false;
 
-            float desired = Mathf.Max(_minHeight, MeasureTextHeight() + Plugin.CellPadding);
+            float desired = Mathf.Max(_minHeight, MeasureTextHeight() + Plugin.CellPadding + Plugin.CellPaddingTop + Plugin.CellPaddingBottom);
             float delta = desired - _minHeight;
             bool changed = false;
 
@@ -776,6 +786,8 @@ namespace ChillMoreTodoText
             }
 
             // DeadLineCalenderButton (right-anchored, pivot 1.0): right edge CellPaddingRight left of TodoRemoveButton.
+            // Activation and height fix are done once during CaptureInnerChain to avoid per-frame
+            // SetActive toggling that breaks click handling.
             if (_deadLineCalenderButtonRt != null)
             {
                 float targetCalX = -(Plugin.CellPaddingRight + _todoRemoveButtonWidth + Plugin.CellPaddingRight);
@@ -825,16 +837,41 @@ namespace ChillMoreTodoText
                 }
             }
 
-            // Widen InputField (right-anchored, fixed 203px width) to fill the wider cell.
-            // Change pivot.x to 1.0 (right) so the field grows leftward from its right anchor,
-            // and set anchoredPos.x = 0 so the right edge aligns with CellUIParent's right edge.
-            // Left edge is positioned CellPaddingLeft right of CheckButton's right edge.
+            // Reposition DateTime (right-anchored, pivot 1.0) to sit CellPaddingRight left
+            // of TodoRemoveButton. Vanilla had it at 89.60px from the right; we move it to
+            // CellPaddingRight + TodoRemoveButtonWidth + CellPaddingRight from the right.
+            // Also widen DateTime so ExpireButton's Text (TMP) doesn't get clipped on the left.
+            // Vanilla DateTime=55px but ExpireButton right edge is at 77.50px — overflow.
+            if (_dateTimeRt != null)
+            {
+                float targetDateTimeX = -(Plugin.CellPaddingRight + _todoRemoveButtonWidth + Plugin.CellPaddingRight);
+                if (Mathf.Abs(_dateTimeRt.anchoredPosition.x - targetDateTimeX) > 0.5f)
+                {
+                    Vector2 dap = _dateTimeRt.anchoredPosition; dap.x = targetDateTimeX;
+                    _dateTimeRt.anchoredPosition = dap;
+                }
+                // Widen DateTime to 80px so ExpireButton (50px at offset 27.50) fits without clipping
+                float targetDateTimeW = 80f;
+                if (Mathf.Abs(_dateTimeRt.sizeDelta.x - targetDateTimeW) > 0.5f)
+                {
+                    Vector2 dsd = _dateTimeRt.sizeDelta; dsd.x = targetDateTimeW; _dateTimeRt.sizeDelta = dsd;
+                }
+            }
+
+            // Widen InputField (right-anchored, fixed 203px width) to fill the space between
+            // CheckButton and DateTime. Pivot.x = 1.0 (right) so it grows leftward.
+            // Left edge: CellPaddingLeft right of CheckButton's right edge.
+            // Right edge: CellPaddingRight left of DateTime's left edge.
             if (_inputFieldRt != null && _inputFieldBaseWidth > 1f)
             {
                 float checkLeft = Plugin.CellPaddingLeft + _dragButtonInnerWidth + Plugin.CellPaddingLeft;
                 float checkRight = checkLeft + _checkButtonWidth;
                 float inputLeft = checkRight + Plugin.CellPaddingLeft;
-                float targetInputW = targetW - inputLeft;
+                // DateTime right edge offset from CellUIParent right = CellPaddingRight + TodoRemoveButtonWidth + CellPaddingRight
+                float dateTimeRightOffset = Plugin.CellPaddingRight + _todoRemoveButtonWidth + Plugin.CellPaddingRight;
+                // InputField right edge = dateTimeRightOffset + 80px (widened DateTime) + CellPaddingRight
+                float inputRightOffset = dateTimeRightOffset + 80f + Plugin.CellPaddingRight;
+                float targetInputW = targetW - inputLeft - inputRightOffset;
                 if (Mathf.Abs(_inputFieldRt.sizeDelta.x - targetInputW) > 0.5f)
                 {
                     Vector2 isd = _inputFieldRt.sizeDelta; isd.x = targetInputW; _inputFieldRt.sizeDelta = isd;
@@ -843,9 +880,10 @@ namespace ChillMoreTodoText
                 {
                     Vector2 piv = _inputFieldRt.pivot; piv.x = 1f; _inputFieldRt.pivot = piv;
                 }
-                if (Mathf.Abs(_inputFieldRt.anchoredPosition.x) > 0.5f)
+                float targetInputX = -inputRightOffset;
+                if (Mathf.Abs(_inputFieldRt.anchoredPosition.x - targetInputX) > 0.5f)
                 {
-                    Vector2 iap = _inputFieldRt.anchoredPosition; iap.x = 0f; _inputFieldRt.anchoredPosition = iap;
+                    Vector2 iap = _inputFieldRt.anchoredPosition; iap.x = targetInputX; _inputFieldRt.anchoredPosition = iap;
                 }
             }
         }
@@ -898,6 +936,7 @@ namespace ChillMoreTodoText
         private RectTransform _rt;
         private Vector2 _baseSize;
         private Vector2 _baseSizeDelta;
+        private float _baseAnchoredPosX;
         private bool _haveBase;
 
         // Center-anchored elements that drift right when the panel widens. Shift them left
@@ -919,13 +958,85 @@ namespace ChillMoreTodoText
         private RectTransform _completeList;
         private float _completeListBaseX;
 
+        // CompleteList's own Scroll View (left-anchored, doesn't auto-widen).
+        private RectTransform _completeListScrollView;
+        private float _completeListScrollViewBaseW;
+
+        // CompleteList container width tracking for multiplicative scaling.
+        // The game animates the container width to open/close; we scale it proportionally.
+        private float _gameClSdX;
+        private float _lastSetClSdX;
+        private bool _clSdInitialized;
+
         // One-time diagnostic dump bookkeeping.
         private int _frames;
         private bool _dumped;
 
+        // Frame counter for one-time position shifts.
+        private int _posApplyFrames;
+
         private void Awake()
         {
             _rt = transform as RectTransform;
+        }
+
+        private void OnEnable()
+        {
+            _posApplyFrames = 0;
+            _clSdInitialized = false;
+            Canvas.willRenderCanvases += ApplyPositionShifts;
+        }
+
+        private void OnDisable()
+        {
+            Canvas.willRenderCanvases -= ApplyPositionShifts;
+        }
+
+        private void ApplyPositionShifts()
+        {
+            if (_rt == null || !_haveBase)
+                return;
+
+            if (Mathf.Approximately(Plugin.UIWidthScale, 1f))
+            {
+                Canvas.willRenderCanvases -= ApplyPositionShifts;
+                return;
+            }
+
+            // LateUpdate handles the frame counter and unsubscribing at 60 frames.
+            // This callback just re-applies position shifts to counter game resets.
+            if (_posApplyFrames > 60)
+                return;
+
+            float widthDelta = (Plugin.UIWidthScale - 1f) * _baseSize.x;
+            float halfDelta = widthDelta * 0.5f;
+
+            // Shift the panel left by widthDelta to stay centered.
+            float targetPosX = _baseAnchoredPosX - widthDelta;
+            Vector2 ap = _rt.anchoredPosition;
+            if (Mathf.Abs(ap.x - targetPosX) > 0.5f)
+            {
+                ap.x = targetPosX;
+                _rt.anchoredPosition = ap;
+            }
+
+            // Shift CompleteList right by widthDelta.
+            if (_completeList != null)
+            {
+                float clTargetX = _completeListBaseX + widthDelta;
+                Vector2 clAp = _completeList.anchoredPosition;
+                if (Mathf.Abs(clAp.x - clTargetX) > 0.5f)
+                {
+                    clAp.x = clTargetX;
+                    _completeList.anchoredPosition = clAp;
+                }
+            }
+
+            // Counter center-anchor drift for panel-level elements.
+            ShiftLeft(_dragButton, _dragButtonBaseX, halfDelta);
+            ShiftLeft(_completeCountText, _completeCountTextBaseX, halfDelta);
+            ShiftLeft(_addTodoUI, _addTodoUIBaseX, halfDelta);
+            ShiftLeft(_compleateTitle, _compleateTitleBaseX, halfDelta);
         }
 
         private void LateUpdate()
@@ -940,6 +1051,7 @@ namespace ChillMoreTodoText
                     return;
                 _baseSize = new Vector2(r.width, r.height);
                 _baseSizeDelta = _rt.sizeDelta;
+                _baseAnchoredPosX = _rt.anchoredPosition.x;
                 _haveBase = true;
 
                 // Find panel-level elements by name among direct children.
@@ -999,7 +1111,7 @@ namespace ChillMoreTodoText
             if (changed)
                 _rt.sizeDelta = sd;
 
-            // Widen the Scroll View to match the panel's live width.
+            // Widen the main Scroll View to match the panel's live width.
             if (_scrollView != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
             {
                 float svTarget = _rt.rect.width;
@@ -1011,28 +1123,87 @@ namespace ChillMoreTodoText
                 }
             }
 
-            // Shift CompleteList right by widthDelta so it sits at the new right edge.
-            if (_completeList != null && !Mathf.Approximately(Plugin.UIWidthScale, 1f))
+            // Apply position shifts for the first N frames, then stop so user can drag.
+            if (!Mathf.Approximately(Plugin.UIWidthScale, 1f) && _posApplyFrames <= 60)
             {
-                float clTargetX = _completeListBaseX + widthDelta;
-                Vector2 clAp = _completeList.anchoredPosition;
-                if (Mathf.Abs(clAp.x - clTargetX) > 0.5f)
+                _posApplyFrames++;
+                if (_posApplyFrames == 1)
+                    Plugin.Log.LogInfo($"[TodoListUIScaler] Applying position shifts for 60 frames: widthDelta={widthDelta:F1}, panelTargetX={_baseAnchoredPosX - widthDelta:F1}, clTargetX={(_completeList != null ? _completeListBaseX + widthDelta : 0):F1}");
+                if (_posApplyFrames == 60)
                 {
-                    clAp.x = clTargetX;
-                    _completeList.anchoredPosition = clAp;
+                    Plugin.Log.LogInfo("[TodoListUIScaler] Position shifts complete, unsubscribing from willRenderCanvases.");
+                    Canvas.willRenderCanvases -= ApplyPositionShifts;
                 }
-            }
-
-            // Counter center-anchor drift for panel-level elements. The panel grows rightward
-            // (pivot at left edge), so center-anchored children drift right by widthDelta/2.
-            // Shift them left to keep their vanilla absolute positions.
-            if (!Mathf.Approximately(Plugin.UIWidthScale, 1f))
-            {
                 float halfDelta = widthDelta * 0.5f;
+
+                // Shift the panel left by widthDelta to stay centered.
+                // Both the main panel and CompleteList each grow by widthDelta,
+                // so total extra width is 2*widthDelta; shift by half of that = widthDelta.
+                float targetPosX = _baseAnchoredPosX - widthDelta;
+                Vector2 ap = _rt.anchoredPosition;
+                if (Mathf.Abs(ap.x - targetPosX) > 0.5f)
+                {
+                    ap.x = targetPosX;
+                    _rt.anchoredPosition = ap;
+                }
+
+                // Shift CompleteList right by widthDelta.
+                if (_completeList != null)
+                {
+                    float clTargetX = _completeListBaseX + widthDelta;
+                    Vector2 clAp = _completeList.anchoredPosition;
+                    if (Mathf.Abs(clAp.x - clTargetX) > 0.5f)
+                    {
+                        clAp.x = clTargetX;
+                        _completeList.anchoredPosition = clAp;
+                    }
+                }
+
+                // Counter center-anchor drift.
                 ShiftLeft(_dragButton, _dragButtonBaseX, halfDelta);
                 ShiftLeft(_completeCountText, _completeCountTextBaseX, halfDelta);
                 ShiftLeft(_addTodoUI, _addTodoUIBaseX, halfDelta);
                 ShiftLeft(_compleateTitle, _compleateTitleBaseX, halfDelta);
+            }
+
+            // Continuously scale the CompleteList container and Scroll View multiplicatively.
+            // The game animates the container width to open/close; we scale it proportionally
+            // so closed stays closed (-3 * 2 = -6) and open doubles (367 * 2 = 734).
+            if (!Mathf.Approximately(Plugin.UIWidthScale, 1f) && _completeList != null)
+            {
+                // Scale the CompleteList container width.
+                float curClSdX = _completeList.sizeDelta.x;
+                if (!_clSdInitialized)
+                {
+                    _gameClSdX = curClSdX;
+                    _lastSetClSdX = curClSdX;
+                    _clSdInitialized = true;
+                }
+                else if (Mathf.Abs(curClSdX - _lastSetClSdX) > 0.5f)
+                {
+                    // Game changed the width (open/close animation) — record new target.
+                    _gameClSdX = curClSdX;
+                }
+                float clSdTarget = _gameClSdX * Plugin.UIWidthScale;
+                if (Mathf.Abs(curClSdX - clSdTarget) > 0.5f)
+                {
+                    Vector2 clSd = _completeList.sizeDelta;
+                    clSd.x = clSdTarget;
+                    _completeList.sizeDelta = clSd;
+                    _lastSetClSdX = clSdTarget;
+                }
+            }
+
+            // Scale the CompleteList's Scroll View width multiplicatively.
+            if (!Mathf.Approximately(Plugin.UIWidthScale, 1f) && _completeListScrollView != null && _completeListScrollViewBaseW > 1f)
+            {
+                float clSvTarget = _completeListScrollViewBaseW * Plugin.UIWidthScale;
+                Vector2 clSvSd = _completeListScrollView.sizeDelta;
+                if (Mathf.Abs(clSvSd.x - clSvTarget) > 0.5f)
+                {
+                    clSvSd.x = clSvTarget;
+                    _completeListScrollView.sizeDelta = clSvSd;
+                }
             }
 
             // One-time diagnostic dump, a few frames after the panel settles.
@@ -1097,16 +1268,30 @@ namespace ChillMoreTodoText
                 if (sr == null) continue;
                 if (fallback == null) fallback = sr;
                 if (sr.content == null) continue;
+                bool hasTodoCell = false;
                 for (int i = 0; i < sr.content.childCount; i++)
                 {
                     if (sr.content.GetChild(i).name != null && sr.content.GetChild(i).name.StartsWith("TodoCell"))
                     {
-                        _scrollView = sr.transform as RectTransform;
-                        return;
+                        hasTodoCell = true;
+                        break;
+                    }
+                }
+                if (hasTodoCell)
+                {
+                    RectTransform srRt = sr.transform as RectTransform;
+                    if (_scrollView == null)
+                    {
+                        _scrollView = srRt;
+                    }
+                    else if (_completeListScrollView == null && srRt != _scrollView)
+                    {
+                        _completeListScrollView = srRt;
+                        _completeListScrollViewBaseW = srRt.rect.width;
                     }
                 }
             }
-            if (fallback != null)
+            if (_scrollView == null && fallback != null)
                 _scrollView = fallback.transform as RectTransform;
         }
     }
