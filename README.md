@@ -1,13 +1,13 @@
 # Chill More Todo Text
 
 A [BepInEx](https://github.com/BepInEx/BepInEx) plugin for **Chill With You: Lo-Fi Story** that lets the
-to-do list hold **much more text per entry** — and optionally widens the entire panel so text wraps less
+to-do list hold **much more text per entry**, and optionally widens the entire panel so text wraps less
 and more content fits per row.
 
-Vanilla caps each box to a couple of lines and cuts long entries off with a trailing `…`; this raises the
+Vanilla caps each box to a couple of lines and cuts long entries off with a trailing `…`. This raises the
 cap, shows the whole thing, grows rows to fit, and can scale the panel width/height to your liking.
 
-> Personal mod for a game I own. The plugin contains **no game code** — it patches the game in memory at
+> Personal mod for a game I own. The plugin contains **no game code**. It patches the game in memory at
 > runtime and never modifies or redistributes any of the game's files.
 
 ## How it works
@@ -20,14 +20,14 @@ a `TMP_InputField`, and what limits it is:
 - the display text component's **`overflowMode = Ellipsis`**, which is what renders the `…` once the text no
   longer fits.
 
-Every multi-line text box in the game — to-do items, to-do list titles, habit names — is wired up through one
+Every multi-line text box in the game (to-do items, to-do list titles, habit names) is wired up through one
 shared helper:
 
 ```csharp
 InputFieldExtensions.SetupMultiLineSubmit(this TMP_InputField inputField)
 ```
 
-So instead of chasing each UI class (`TodoUI`, `TodoTaskListItemView`, `SelectTodoListUI`, …), this plugin
+So instead of chasing each UI class (`TodoUI`, `TodoTaskListItemView`, `SelectTodoListUI`, etc.), this plugin
 uses a **Harmony postfix on that single shared chokepoint**. After the game finishes setting a field up, the
 postfix:
 
@@ -39,7 +39,7 @@ postfix:
 | `textComponent.enableWordWrapping` → `true` | long text wraps instead of running off the side |
 
 Because `SetupMultiLineSubmit` reads `lineLimit` *live on every keystroke*, changing it from the postfix is
-respected for all later typing — and because the postfix fires every time a cell is built, it also covers
+respected for all later typing. And because the postfix fires every time a cell is built, it also covers
 to-do rows created later as you scroll or switch lists. Clean, reversible, and survives game updates (no
 patched DLLs on disk).
 
@@ -53,9 +53,9 @@ falls back to TMP font auto-size so nothing ever overlaps.
 
 **Panel widening.** A third patch hooks the to-do list panel's `Setup` (`TodoListUI`,
 `Bulbul.Mobile.TodoListUIViewMobile`) and attaches a `TodoListUIScaler` component. This scales the panel's
-width and/or height by the configured factors (default 1.5× wider). The panel repositions on spawn to stay
+width and/or height by the configured factors (default 1.5x wider). The panel repositions on spawn to stay
 centered on screen, then releases after ~1 second so you can freely drag it around. The main scroll view, the
-Completed list (including its open/close animation), and all inner elements scale proportionally — the text
+Completed list (including its open/close animation), and all inner elements scale proportionally. The text
 itself is never stretched.
 
 **Paste scroll fix.** When pasting text into a to-do cell, TMP's `ScrollToCaret` can shift the text out of
@@ -63,7 +63,7 @@ position. With `DisableInputScroll` enabled (default true), the plugin continuou
 scroll position so pasted text stays put.
 
 The game targets the **Mono** scripting backend (Unity `2022.3.62f2`), which is why BepInEx 5 + Harmony is the
-right tool here — no IL2CPP, and the gameplay assembly isn't name-obfuscated.
+right tool here. No IL2CPP, and the gameplay assembly isn't name-obfuscated.
 
 ## Build
 
@@ -84,7 +84,7 @@ dotnet build src/ChillMoreTodoText/ChillMoreTodoText.csproj -c Release \
 The build refreshes `dist/ChillMoreTodoText.dll` (used by the installer), and if `…\BepInEx\plugins` exists it
 also auto-copies the plugin there.
 
-## Install on Windows (easy — recommended)
+## Install on Windows (easy, recommended)
 
 1. Download **`ChillMoreTodoText-vX.Y.Z.zip`** from the
    [latest release](https://github.com/flamfoof/chill-with-you-more-todo-text/releases/latest) and unzip it.
@@ -94,8 +94,8 @@ also auto-copies the plugin there.
    installed and copies the plugin.
 4. Launch the game normally.
 
-> Windows may show a SmartScreen / "Windows protected your PC" prompt for the `.bat` — click
-> **More info → Run anyway**. The script only edits this game's folder (installs BepInEx + the plugin)
+> Windows may show a SmartScreen / "Windows protected your PC" prompt for the `.bat`. Click
+> **More info > Run anyway**. The script only edits this game's folder (installs BepInEx + the plugin)
 > and downloads BepInEx from its official GitHub release. You can read `Install-ChillMoreTodoText.ps1`
 > first if you want to verify it.
 
@@ -111,12 +111,12 @@ powershell -ExecutionPolicy Bypass -File installer\Install-ChillMoreTodoText.ps1
 ## Install manually
 
 1. Install **BepInEx 5.x (x64, Mono)** into the game folder
-   (`…\steamapps\common\Chill with You Lo-Fi Story`) — download from the
+   (`…\steamapps\common\Chill with You Lo-Fi Story`). Download from the
    [BepInEx releases](https://github.com/BepInEx/BepInEx/releases) (`BepInEx_win_x64_5.4.x`).
 2. Run the game once so BepInEx generates its folders, then close it.
 3. Build this plugin (above) or copy `ChillMoreTodoText.dll` into `…\BepInEx\plugins\`.
 4. Launch the game. Check `…\BepInEx\LogOutput.log` for:
-   `Chill More Todo Text loaded — to-do text boxes raised to 20 line(s), unlimited characters, …`
+   `Chill More Todo Text loaded - to-do text boxes raised to 20 line(s), unlimited characters, …`
 
 ## Configure
 
@@ -171,23 +171,23 @@ Restart the game (or reopen the to-do panel) to apply.
 
 - **`UIWidthScale`** scales the entire to-do panel horizontally. The main list, the Completed list, and all
   inner elements (buttons, input fields, backgrounds) scale proportionally. The Completed list's open/close
-  animation is preserved — it stays closed when closed and scales to the wider width when opened.
+  animation is preserved. It stays closed when closed and scales to the wider width when opened.
 - The panel repositions on spawn to stay centered, then releases after ~1 second so you can drag it freely.
 - **`UIHeightScale`** scales the panel vertically so more rows are visible without scrolling.
-- Text is never stretched — only the container sizes change.
+- Text is never stretched, only the container sizes change.
 
 ## Caveats
 
 - If a future game update renames `SetupMultiLineSubmit` or the cell `Setup` methods, the plugin logs a
   warning (`Could not find …` / `Could not hook any to-do cell Setup method …`) and falls back to vanilla
   behavior for that part.
-- Very long entries make their row tall, so the list fills up faster — that's expected. Tune `CellPadding` if
+- Very long entries make their row tall, so the list fills up faster. That's expected. Tune `CellPadding` if
   rows feel cramped/roomy, or set `GrowCellsToFitText = false` to keep the vanilla fixed-height rows (text
   then shrinks to fit instead).
 - Existing tasks may need the to-do panel reopened once so they re-measure at the new height.
 - When `UIWidthScale > 1.0`, the panel shifts left on spawn to stay centered, then locks in place after ~1
   second so it can be dragged freely. If you close and reopen the panel, it re-centers again.
-- The Completed list scales proportionally with `UIWidthScale` — it stays closed when closed and opens to the
+- The Completed list scales proportionally with `UIWidthScale`. It stays closed when closed and opens to the
   wider width when clicked. The open/close animation is preserved.
 
 ## Repo layout
@@ -199,5 +199,5 @@ dist/                    Built plugin DLL the installer ships
 STEAM_GUIDE.md           Copy/paste Steam Community guide (BBCode)
 Directory.Build.props    Default game paths (override per-machine)
 nuget.config             Adds the BepInEx NuGet feed
-decompiled/              Local reference only — gitignored, never committed
+decompiled/              Local reference only, gitignored, never committed
 ```
