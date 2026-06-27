@@ -617,6 +617,28 @@ namespace ChillMoreTodoText
             // undoing horizontal widening.
             if (vertChanged && _rt.parent is RectTransform parent)
                 LayoutRebuilder.MarkLayoutForRebuild(parent);
+
+            // Prevent paste-induced text scrolling: TMP_InputField.ScrollToCaret shifts the
+            // text component's anchoredPosition when pasting. Since rows grow to fit all text,
+            // reset the scroll position to keep text in place.
+            if (Plugin.DisableInputScroll)
+            {
+                RectTransform textRt = _text.rectTransform;
+                if (Mathf.Abs(textRt.anchoredPosition.y) > 0.01f)
+                {
+                    Vector2 tp = textRt.anchoredPosition;
+                    tp.y = 0f;
+                    textRt.anchoredPosition = tp;
+                }
+                // Also reset the Text Area viewport if it has been scrolled.
+                RectTransform textAreaRt = _input.textViewport;
+                if (textAreaRt != null && Mathf.Abs(textAreaRt.anchoredPosition.y) > 0.01f)
+                {
+                    Vector2 vp = textAreaRt.anchoredPosition;
+                    vp.y = 0f;
+                    textAreaRt.anchoredPosition = vp;
+                }
+            }
         }
 
         // Grows the cell root and its fixed-height inner pieces vertically to fit the text.
